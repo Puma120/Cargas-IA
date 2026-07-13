@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./BackEnd
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./BackEnd/.env
+    volumes:
+      - ./BackEnd/data:/app/data
+      - ./BackEnd/uploads:/app/uploads
+    depends_on:
+      - qdrant
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  frontend:
+    build: ./FrontEnd
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./FrontEnd/src:/app/src
+      - ./FrontEnd/public:/app/public
+    depends_on:
+      - backend
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+volumes:
+  qdrant_data:
