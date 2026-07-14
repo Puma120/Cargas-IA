@@ -138,3 +138,6 @@ class FileConverterService:
                 raise ValueError("Unsupported file format. Please provide a .csv, .xlsx, or .xls file.")
 
             return all_sheets_processed
+        except Exception as e:
+            logger.error(f"Error procesando el archivo: {str(e)}")
+            raise e
