@@ -1,149 +1,257 @@
 import { useState, useRef, useEffect } from 'react';
-import { Upload, FileText, Brain, Database, Save, CheckCircle, XCircle } from 'lucide-react';
+import { Upload, FileText, Brain, Save, CheckCircle, XCircle, ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
 import { uploadPdf, startRagProcessing, getStatus, saveAndLearn } from './api';
 
+// Cuántos documentos se procesan (OCR + LLM) al mismo tiempo. Gemini free-tier
+// tiene límites de pocos requests/minuto, así que un número bajo evita 429s
+// cuando se sube un lote grande de archivos.
+const MAX_CONCURRENT = 2;
+
+const ACTIVE_PHASES = ['UPLOADING', 'PROCESSING_OCR', 'PROCESSING_VECTOR', 'PROCESSING_LLM'];
+const POLLABLE_PHASES = ['PROCESSING_OCR', 'PROCESSING_VECTOR', 'PROCESSING_LLM'];
+
+const PHASE_PROGRESS = {
+  QUEUED: 0,
+  UPLOADING: 10,
+  PROCESSING_OCR: 35,
+  PROCESSING_VECTOR: 60,
+  PROCESSING_LLM: 85,
+  COMPLETED: 100,
+  ERROR: 100,
+};
+
+const PHASE_LABELS = {
+  QUEUED: 'En cola',
+  UPLOADING: 'Subiendo...',
+  PROCESSING_OCR: '1/3 Extracción OCR',
+  PROCESSING_VECTOR: '2/3 Vectorización',
+  PROCESSING_LLM: '3/3 Inferencia LLM',
+  COMPLETED: 'Completado',
+  ERROR: 'Error',
+};
+
+const DOCUMENT_TYPE_TO_DATA_TYPE = {
+  'Comprobante de Domicilio': 'comprobantes',
+  'CFDI': 'cfdis',
+  'Identificación Oficial': 'identificaciones',
+  'Acta Constitutiva': 'actas_constitutivas',
+  'Activo': 'activos',
+};
+
+const DATA_TYPES = ['comprobantes', 'cfdis', 'identificaciones', 'actas_constitutivas', 'activos'];
+
+const DATA_TYPE_TITLES = {
+  comprobantes: '(Comprobantes)',
+  cfdis: '(CFDIs)',
+  identificaciones: '(Identificaciones Oficiales)',
+  actas_constitutivas: '(Actas Constitutivas)',
+  activos: '(Activos)',
+};
+
+const DATA_TYPE_FIELDS = {
+  comprobantes: [
+    { key: 'tipo_servicio', label: 'Tipo Servicio' },
+    { key: 'nombre', label: 'Nombre' },
+    { key: 'domicilio', label: 'Domicilio' },
+    { key: 'periodo_facturacion', label: 'Periodo' },
+    { key: 'monto_a_pagar', label: 'Monto', type: 'number' },
+  ],
+  cfdis: [
+    { key: 'uuid', label: 'UUID' },
+    { key: 'rfc_emisor', label: 'RFC Emisor' },
+    { key: 'fecha', label: 'Fecha' },
+    { key: 'total', label: 'Total MXN', type: 'number' },
+  ],
+  identificaciones: [
+    { key: 'tipo_identificacion', label: 'Tipo ID' },
+    { key: 'nombre', label: 'Nombre' },
+    { key: 'curp', label: 'CURP' },
+    { key: 'clave_elector', label: 'Clave Elector' },
+    { key: 'domicilio', label: 'Domicilio' },
+    { key: 'sexo', label: 'Sexo' },
+    { key: 'seccion', label: 'Sección' },
+    { key: 'fecha_nacimiento', label: 'Fecha de Nacimiento' },
+    { key: 'ocr', label: 'OCR' },
+    { key: 'vigencia', label: 'Vigencia' },
+  ],
+  actas_constitutivas: [
+    { key: 'razon_social', label: 'Razón Social' },
+    { key: 'rfc', label: 'RFC' },
+    { key: 'fecha_constitucion', label: 'Fecha' },
+    { key: 'objeto_social', label: 'Objeto Social' },
+    { key: 'representante_legal', label: 'Representante' },
+    { key: 'notaria', label: 'Notaría' },
+    { key: 'ciudad', label: 'Ciudad' },
+    { key: 'notario', label: 'Notario' },
+    { key: 'numero_escritura', label: 'No. Escritura' },
+  ],
+  activos: [
+    { key: 'clave_vieja', label: 'Clave' },
+    { key: 'nombre_activo', label: 'Descripción' },
+    { key: 'numero_serie', label: 'No. Serie' },
+    { key: 'custodio', label: 'Custodio' },
+  ],
+};
+
+let nextItemId = 1;
+
 function App() {
-  const [file, setFile] = useState(null);
+  const [queue, setQueue] = useState([]);
   const [isDragging, setIsDragging] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  
-  const [status, setStatus] = useState('IDLE'); // IDLE, PROCESSING_OCR, PROCESSING_VECTOR, PROCESSING_LLM, COMPLETED, ERROR
-  const [errorMsg, setErrorMsg] = useState('');
-  const [extractedData, setExtractedData] = useState(null);
-  
-  const [documentInfo, setDocumentInfo] = useState(null);
-  const intervalRef = useRef(null);
+
+  const queueRef = useRef(queue);
+  const startedIdsRef = useRef(new Set());
 
   useEffect(() => {
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
-  }, []);
+    queueRef.current = queue;
+  }, [queue]);
 
-  const handleDragOver = (e) => {
-    e.preventDefault();
-    setIsDragging(true);
+  const updateItem = (id, patch) => {
+    setQueue(q => q.map(it => it.id === id ? { ...it, ...(typeof patch === 'function' ? patch(it) : patch) } : it));
   };
 
-  const handleDragLeave = () => {
-    setIsDragging(false);
+  const addFiles = (fileList) => {
+    const pdfFiles = Array.from(fileList).filter(f => f.name.toLowerCase().endsWith('.pdf'));
+    if (pdfFiles.length === 0) return;
+
+    const newItems = pdfFiles.map(file => ({
+      id: nextItemId++,
+      file,
+      name: file.name,
+      phase: 'QUEUED',
+      documentInfo: null,
+      extractedData: null,
+      errorMsg: '',
+      duplicateWarning: false,
+      expanded: false,
+    }));
+    setQueue(q => [...q, ...newItems]);
   };
 
+  const handleDragOver = (e) => { e.preventDefault(); setIsDragging(true); };
+  const handleDragLeave = () => setIsDragging(false);
   const handleDrop = (e) => {
     e.preventDefault();
     setIsDragging(false);
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      setFile(e.dataTransfer.files[0]);
-    }
+    if (e.dataTransfer.files?.length > 0) addFiles(e.dataTransfer.files);
   };
-
   const handleFileChange = (e) => {
-    if (e.target.files && e.target.files.length > 0) {
-      setFile(e.target.files[0]);
+    if (e.target.files?.length > 0) addFiles(e.target.files);
+    e.target.value = '';
+  };
+
+  const startProcessingItem = async (item) => {
+    updateItem(item.id, { phase: 'UPLOADING' });
+    try {
+      const uploadRes = await uploadPdf(item.file);
+      updateItem(item.id, {
+        documentInfo: uploadRes,
+        phase: 'PROCESSING_OCR',
+        duplicateWarning: !!uploadRes.duplicate,
+      });
+      await startRagProcessing(uploadRes.document_id, uploadRes.entity_type, uploadRes.file_path);
+    } catch (err) {
+      updateItem(item.id, {
+        phase: 'ERROR',
+        errorMsg: err.response?.data?.detail || err.message || 'Fallo en la subida',
+      });
     }
   };
 
-  const handleUploadAndProcess = async () => {
-    if (!file) return;
-    setUploading(true);
-    setStatus('PROCESSING_OCR');
-    setErrorMsg('');
-    setExtractedData(null);
-    
-    try {
-      // 1. Upload
-      const uploadRes = await uploadPdf(file);
-      if (uploadRes.duplicate) {
-        alert("⚠️ ATENCIÓN: Este documento ya ha sido procesado anteriormente. Se cargarán los datos existentes para evitar duplicados en la base de datos.");
+  // Bucle maestro: cada 1.5s arranca items en cola si hay cupo de concurrencia
+  // libre, y sondea el estado de los que ya están procesándose.
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      const current = queueRef.current;
+
+      const activeCount = current.filter(it => ACTIVE_PHASES.includes(it.phase)).length;
+      const freeSlots = MAX_CONCURRENT - activeCount;
+      if (freeSlots > 0) {
+        const toStart = current
+          .filter(it => it.phase === 'QUEUED' && !startedIdsRef.current.has(it.id))
+          .slice(0, freeSlots);
+        toStart.forEach(it => {
+          startedIdsRef.current.add(it.id);
+          startProcessingItem(it);
+        });
       }
-      setDocumentInfo(uploadRes);
-      
-      // 2. Process
-      await startRagProcessing(uploadRes.document_id, uploadRes.entity_type, uploadRes.file_path);
-      
-      // 3. Poll Status
-      intervalRef.current = setInterval(async () => {
+
+      const toPoll = current.filter(it => POLLABLE_PHASES.includes(it.phase) && it.documentInfo);
+      await Promise.all(toPoll.map(async (it) => {
         try {
-          const res = await getStatus(uploadRes.entity_type, uploadRes.document_id);
-          
+          const res = await getStatus(it.documentInfo.entity_type, it.documentInfo.document_id);
           if (res.status === 'COMPLETED') {
-            setStatus('COMPLETED');
-            setExtractedData(res.extracted_data);
-            clearInterval(intervalRef.current);
+            updateItem(it.id, { phase: 'COMPLETED', extractedData: res.extracted_data, expanded: true });
           } else if (res.status === 'ERROR') {
-            setStatus('ERROR');
-            setErrorMsg(res.error_message || 'Error desconocido');
-            clearInterval(intervalRef.current);
-          } else {
-            setStatus(res.status);
+            updateItem(it.id, { phase: 'ERROR', errorMsg: res.error_message || 'Error desconocido' });
+          } else if (res.status !== it.phase) {
+            updateItem(it.id, { phase: res.status });
           }
         } catch (pollErr) {
-          console.error("Error polling", pollErr);
+          console.error('Error polling', pollErr);
         }
-      }, 1500);
+      }));
+    }, 1500);
 
-    } catch (err) {
-      console.error(err);
-      setStatus('ERROR');
-      setErrorMsg(err.response?.data?.detail || err.message || "Fallo en la subida");
-    } finally {
-      setUploading(false);
-    }
+    return () => clearInterval(interval);
+  }, []);
+
+  const getDataType = (item) => {
+    const mapped = DOCUMENT_TYPE_TO_DATA_TYPE[item.extractedData?.document_type];
+    if (mapped) return mapped;
+
+    const d = item.extractedData;
+    if (d.comprobantes?.length > 0) return 'comprobantes';
+    if (d.cfdis?.length > 0) return 'cfdis';
+    if (d.identificaciones?.length > 0) return 'identificaciones';
+    if (d.actas_constitutivas?.length > 0) return 'actas_constitutivas';
+    return 'activos';
   };
 
-  const handleSaveAndLearn = async () => {
-    if (!extractedData || !documentInfo) return;
+  const handleCellChange = (itemId, idx, field, type, value) => {
+    setQueue(q => q.map(it => {
+      if (it.id !== itemId) return it;
+      const newData = [...it.extractedData[type]];
+      newData[idx] = { ...newData[idx], [field]: value };
+      return { ...it, extractedData: { ...it.extractedData, [type]: newData } };
+    }));
+  };
+
+  const handleSaveAndLearn = async (item) => {
     try {
-      let dataToSave = [];
-      let dataType = 'activos';
-
-      if (extractedData.comprobantes?.length > 0) {
-        dataToSave = extractedData.comprobantes;
-        dataType = 'comprobantes';
-      } else if (extractedData.cfdis?.length > 0) {
-        dataToSave = extractedData.cfdis;
-        dataType = 'cfdis';
-      } else if (extractedData.identificaciones?.length > 0) {
-        dataToSave = extractedData.identificaciones;
-        dataType = 'identificaciones';
-      } else if (extractedData.actas_constitutivas?.length > 0) {
-        dataToSave = extractedData.actas_constitutivas;
-        dataType = 'actas_constitutivas';
-      } else {
-        dataToSave = extractedData.activos;
-        dataType = 'activos';
-      }
-
+      const dataType = getDataType(item);
+      const dataToSave = item.extractedData[dataType] || [];
       await saveAndLearn(
-        `${documentInfo.entity_type}_${documentInfo.document_id}`,
-        extractedData,
+        `${item.documentInfo.entity_type}_${item.documentInfo.document_id}`,
+        item.extractedData,
         dataToSave,
         null,
         dataType
       );
-      alert("¡Conocimiento guardado en la Base Vectorial exitosamente!");
-      setStatus('IDLE');
-      setExtractedData(null);
-      setFile(null);
+      alert(`¡Conocimiento de "${item.name}" guardado en la Base Vectorial!`);
+      removeItem(item.id);
     } catch (err) {
       console.error(err);
-      alert("Error al guardar: " + err.message);
+      alert('Error al guardar: ' + err.message);
     }
   };
 
-  const handleCellChange = (e, idx, field, type) => {
-    const newData = [...extractedData[type]];
-    newData[idx] = { ...newData[idx], [field]: e.target.value };
-    setExtractedData({ ...extractedData, [type]: newData });
+  const retryItem = (item) => {
+    startedIdsRef.current.delete(item.id);
+    updateItem(item.id, { phase: 'QUEUED', errorMsg: '', documentInfo: null, extractedData: null });
   };
 
-  const getEntityTitle = () => {
-    if (extractedData.comprobantes?.length > 0) return '(Comprobantes)';
-    if (extractedData.cfdis?.length > 0) return '(CFDIs)';
-    if (extractedData.identificaciones?.length > 0) return '(Identificaciones Oficiales)';
-    if (extractedData.actas_constitutivas?.length > 0) return '(Actas Constitutivas)';
-    return '(Activos)';
+  const removeItem = (id) => {
+    startedIdsRef.current.delete(id);
+    setQueue(q => q.filter(it => it.id !== id));
   };
+
+  const toggleExpanded = (id) => updateItem(id, (it) => ({ expanded: !it.expanded }));
+
+  const queuedCount = queue.filter(it => it.phase === 'QUEUED').length;
+  const activeCount = queue.filter(it => ACTIVE_PHASES.includes(it.phase)).length;
+  const completedCount = queue.filter(it => it.phase === 'COMPLETED').length;
+  const errorCount = queue.filter(it => it.phase === 'ERROR').length;
 
   return (
     <div className="container">
@@ -153,304 +261,117 @@ function App() {
       </div>
 
       <div className="glass-panel">
-        {!extractedData && status === 'IDLE' && (
-          <div 
-            className={`dropzone ${isDragging ? 'active' : ''}`}
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-            onClick={() => document.getElementById('fileUpload').click()}
-          >
-            <input 
-              type="file" 
-              id="fileUpload" 
-              style={{display: 'none'}} 
-              accept=".pdf"
-              onChange={handleFileChange}
-            />
-            <div className="dropzone-icon">
-              <Upload size={48} />
-            </div>
-            {file ? (
-              <h3>{file.name}</h3>
-            ) : (
-              <>
-                <h3>Arrastra y suelta tu PDF aquí</h3>
-                <p style={{color: 'var(--text-secondary)', marginTop: '0.5rem'}}>o haz clic para explorar</p>
-              </>
-            )}
-            
-            {file && (
-              <button 
-                className="btn btn-block" 
-                style={{marginTop: '2rem'}}
-                onClick={(e) => { e.stopPropagation(); handleUploadAndProcess(); }}
-                disabled={uploading}
-              >
-                Comenzar Análisis IA
-              </button>
-            )}
+        <div
+          className={`dropzone ${isDragging ? 'active' : ''}`}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          onClick={() => document.getElementById('fileUpload').click()}
+        >
+          <input
+            type="file"
+            id="fileUpload"
+            style={{ display: 'none' }}
+            accept=".pdf"
+            multiple
+            onChange={handleFileChange}
+          />
+          <div className="dropzone-icon">
+            <Upload size={48} />
           </div>
-        )}
-
-        {status !== 'IDLE' && (
-          <div className="progress-container">
-            <h3 style={{marginBottom: '2rem', textAlign: 'center'}}>
-              {status === 'ERROR' ? 'Análisis Fallido' : 'Procesando Documento...'}
-            </h3>
-            
-            <div className="progress-steps">
-              <div className={`step ${status === 'PROCESSING_OCR' ? 'active' : ''} ${['PROCESSING_VECTOR', 'PROCESSING_LLM', 'COMPLETED'].includes(status) ? 'completed' : ''}`}>
-                <div className="step-icon">
-                  {status === 'PROCESSING_OCR' ? <FileText className="animate-pulse" /> : <FileText />}
-                </div>
-                <span>1. Extracción OCR</span>
-              </div>
-              
-              <div className={`step ${status === 'PROCESSING_VECTOR' ? 'active' : ''} ${['PROCESSING_LLM', 'COMPLETED'].includes(status) ? 'completed' : ''}`}>
-                <div className="step-icon">
-                  {status === 'PROCESSING_VECTOR' ? <Database className="animate-pulse" /> : <Database />}
-                </div>
-                <span>2. Vectorización</span>
-              </div>
-              
-              <div className={`step ${status === 'PROCESSING_LLM' ? 'active' : ''} ${status === 'COMPLETED' ? 'completed' : ''}`}>
-                <div className="step-icon">
-                  {status === 'PROCESSING_LLM' ? <Brain className="animate-pulse" /> : <Brain />}
-                </div>
-                <span>3. Inferencia LLM</span>
-              </div>
-            </div>
-
-            {status === 'ERROR' && (
-              <div style={{background: 'rgba(239, 68, 68, 0.1)', border: '1px solid var(--error)', padding: '1rem', borderRadius: '0.5rem', marginTop: '2rem', color: 'var(--error)'}}>
-                <div style={{display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem'}}>
-                  <XCircle size={20} />
-                  <strong>Error de Procesamiento</strong>
-                </div>
-                <p>{errorMsg}</p>
-                <button className="btn btn-secondary" style={{marginTop: '1rem'}} onClick={() => {setStatus('IDLE'); setFile(null);}}>Reintentar</button>
-              </div>
-            )}
-          </div>
-        )}
-
-        {extractedData && (
-          <div style={{marginTop: '2rem'}}>
-            <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem'}}>
-              <h2>Datos Extraídos {getEntityTitle()}</h2>
-              <button className="btn" onClick={handleSaveAndLearn}>
-                <Save size={20} /> Guardar Experiencia
-              </button>
-            </div>
-            
-            {extractedData.comprobantes?.length > 0 && extractedData.comprobantes.map((comp, idx) => (
-              <div key={idx} className="result-card" style={{marginBottom: '1rem'}}>
-                <div className="result-row">
-                  <span className="result-label">Tipo Servicio</span>
-                  <span className="result-value">
-                    <input value={comp.tipo_servicio || ''} onChange={(e) => handleCellChange(e, idx, 'tipo_servicio', 'comprobantes')} />
-                  </span>
-                </div>
-                <div className="result-row">
-                  <span className="result-label">Nombre</span>
-                  <span className="result-value">
-                    <input value={comp.nombre || ''} onChange={(e) => handleCellChange(e, idx, 'nombre', 'comprobantes')} />
-                  </span>
-                </div>
-                <div className="result-row">
-                  <span className="result-label">Domicilio</span>
-                  <span className="result-value">
-                    <input value={comp.domicilio || ''} onChange={(e) => handleCellChange(e, idx, 'domicilio', 'comprobantes')} />
-                  </span>
-                </div>
-                <div className="result-row">
-                  <span className="result-label">Periodo</span>
-                  <span className="result-value">
-                    <input value={comp.periodo_facturacion || ''} onChange={(e) => handleCellChange(e, idx, 'periodo_facturacion', 'comprobantes')} />
-                  </span>
-                </div>
-                <div className="result-row">
-                  <span className="result-label">Monto</span>
-                  <span className="result-value">
-                    <input value={comp.monto_a_pagar || ''} type="number" onChange={(e) => handleCellChange(e, idx, 'monto_a_pagar', 'comprobantes')} />
-                  </span>
-                </div>
-              </div>
-            ))}
-
-            {extractedData.cfdis?.length > 0 && extractedData.cfdis.map((cfdi, idx) => (
-              <div key={idx} className="result-card" style={{marginBottom: '1rem'}}>
-                <div className="result-row">
-                  <span className="result-label">UUID</span>
-                  <span className="result-value">
-                    <input value={cfdi.uuid || ''} onChange={(e) => handleCellChange(e, idx, 'uuid', 'cfdis')} />
-                  </span>
-                </div>
-                <div className="result-row">
-                  <span className="result-label">RFC Emisor</span>
-                  <span className="result-value">
-                    <input value={cfdi.rfc_emisor || ''} onChange={(e) => handleCellChange(e, idx, 'rfc_emisor', 'cfdis')} />
-                  </span>
-                </div>
-                <div className="result-row">
-                  <span className="result-label">Fecha</span>
-                  <span className="result-value">
-                    <input value={cfdi.fecha || ''} onChange={(e) => handleCellChange(e, idx, 'fecha', 'cfdis')} />
-                  </span>
-                </div>
-                <div className="result-row">
-                  <span className="result-label">Total MXN</span>
-                  <span className="result-value">
-                    <input value={cfdi.total || ''} type="number" onChange={(e) => handleCellChange(e, idx, 'total', 'cfdis')} />
-                  </span>
-                </div>
-              </div>
-            ))}
-
-            {extractedData.identificaciones?.length > 0 && extractedData.identificaciones.map((ident, idx) => (
-              <div key={idx} className="result-card" style={{marginBottom: '1rem'}}>
-                <div className="result-row">
-                  <span className="result-label">Tipo ID</span>
-                  <span className="result-value">
-                    <input value={ident.tipo_identificacion || ''} onChange={(e) => handleCellChange(e, idx, 'tipo_identificacion', 'identificaciones')} />
-                  </span>
-                </div>
-                <div className="result-row">
-                  <span className="result-label">Nombre</span>
-                  <span className="result-value">
-                    <input value={ident.nombre || ''} onChange={(e) => handleCellChange(e, idx, 'nombre', 'identificaciones')} />
-                  </span>
-                </div>
-                <div className="result-row">
-                  <span className="result-label">CURP</span>
-                  <span className="result-value">
-                    <input value={ident.curp || ''} onChange={(e) => handleCellChange(e, idx, 'curp', 'identificaciones')} />
-                  </span>
-                </div>
-                <div className="result-row">
-                  <span className="result-label">Clave Elector</span>
-                  <span className="result-value">
-                    <input value={ident.clave_elector || ''} onChange={(e) => handleCellChange(e, idx, 'clave_elector', 'identificaciones')} />
-                  </span>
-                </div>
-                <div className="result-row">
-                  <span className="result-label">Número ID</span>
-                  <span className="result-value">
-                    <input value={ident.numero_identificacion || ''} onChange={(e) => handleCellChange(e, idx, 'numero_identificacion', 'identificaciones')} />
-                  </span>
-                </div>
-                <div className="result-row">
-                  <span className="result-label">Domicilio</span>
-                  <span className="result-value">
-                    <input value={ident.domicilio || ''} onChange={(e) => handleCellChange(e, idx, 'domicilio', 'identificaciones')} />
-                  </span>
-                </div>
-                <div className="result-row">
-                  <span className="result-label">OCR</span>
-                  <span className="result-value">
-                    <input value={ident.ocr || ''} onChange={(e) => handleCellChange(e, idx, 'ocr', 'identificaciones')} />
-                  </span>
-                </div>
-                <div className="result-row">
-                  <span className="result-label">Vigencia</span>
-                  <span className="result-value">
-                    <input value={ident.vigencia || ''} onChange={(e) => handleCellChange(e, idx, 'vigencia', 'identificaciones')} />
-                  </span>
-                </div>
-              </div>
-            ))}
-
-            {extractedData.actas_constitutivas?.length > 0 && extractedData.actas_constitutivas.map((acta, idx) => (
-              <div key={idx} className="result-card" style={{marginBottom: '1rem'}}>
-                <div className="result-row">
-                  <span className="result-label">Razón Social</span>
-                  <span className="result-value">
-                    <input value={acta.razon_social || ''} onChange={(e) => handleCellChange(e, idx, 'razon_social', 'actas_constitutivas')} />
-                  </span>
-                </div>
-                <div className="result-row">
-                  <span className="result-label">RFC</span>
-                  <span className="result-value">
-                    <input value={acta.rfc || ''} onChange={(e) => handleCellChange(e, idx, 'rfc', 'actas_constitutivas')} />
-                  </span>
-                </div>
-                <div className="result-row">
-                  <span className="result-label">Fecha</span>
-                  <span className="result-value">
-                    <input value={acta.fecha_constitucion || ''} onChange={(e) => handleCellChange(e, idx, 'fecha_constitucion', 'actas_constitutivas')} />
-                  </span>
-                </div>
-                <div className="result-row">
-                  <span className="result-label">Objeto Social</span>
-                  <span className="result-value">
-                    <input value={acta.objeto_social || ''} onChange={(e) => handleCellChange(e, idx, 'objeto_social', 'actas_constitutivas')} />
-                  </span>
-                </div>
-                <div className="result-row">
-                  <span className="result-label">Representante</span>
-                  <span className="result-value">
-                    <input value={acta.representante_legal || ''} onChange={(e) => handleCellChange(e, idx, 'representante_legal', 'actas_constitutivas')} />
-                  </span>
-                </div>
-                <div className="result-row">
-                  <span className="result-label">Notaría</span>
-                  <span className="result-value">
-                    <input value={acta.notaria || ''} onChange={(e) => handleCellChange(e, idx, 'notaria', 'actas_constitutivas')} />
-                  </span>
-                </div>
-                <div className="result-row">
-                  <span className="result-label">Ciudad</span>
-                  <span className="result-value">
-                    <input value={acta.ciudad || ''} onChange={(e) => handleCellChange(e, idx, 'ciudad', 'actas_constitutivas')} />
-                  </span>
-                </div>
-                <div className="result-row">
-                  <span className="result-label">Notario</span>
-                  <span className="result-value">
-                    <input value={acta.notario || ''} onChange={(e) => handleCellChange(e, idx, 'notario', 'actas_constitutivas')} />
-                  </span>
-                </div>
-                <div className="result-row">
-                  <span className="result-label">No. Escritura</span>
-                  <span className="result-value">
-                    <input value={acta.numero_escritura || ''} onChange={(e) => handleCellChange(e, idx, 'numero_escritura', 'actas_constitutivas')} />
-                  </span>
-                </div>
-              </div>
-            ))}
-
-            {extractedData.activos?.length > 0 && extractedData.activos.map((activo, idx) => (
-              <div key={idx} className="result-card" style={{marginBottom: '1rem'}}>
-                <div className="result-row">
-                  <span className="result-label">Clave</span>
-                  <span className="result-value">
-                    <input value={activo.clave_vieja || ''} onChange={(e) => handleCellChange(e, idx, 'clave_vieja', 'activos')} />
-                  </span>
-                </div>
-                <div className="result-row">
-                  <span className="result-label">Descripción</span>
-                  <span className="result-value">
-                    <input value={activo.nombre_activo || ''} onChange={(e) => handleCellChange(e, idx, 'nombre_activo', 'activos')} />
-                  </span>
-                </div>
-                <div className="result-row">
-                  <span className="result-label">No. Serie</span>
-                  <span className="result-value">
-                    <input value={activo.numero_serie || ''} onChange={(e) => handleCellChange(e, idx, 'numero_serie', 'activos')} />
-                  </span>
-                </div>
-                <div className="result-row">
-                  <span className="result-label">Custodio</span>
-                  <span className="result-value">
-                    <input value={activo.custodio || ''} onChange={(e) => handleCellChange(e, idx, 'custodio', 'activos')} />
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+          <h3>Arrastra y suelta uno o varios PDFs aquí</h3>
+          <p style={{ color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
+            o haz clic para explorar — se procesan hasta {MAX_CONCURRENT} a la vez
+          </p>
+        </div>
       </div>
+
+      {queue.length > 0 && (
+        <>
+          <div className="queue-summary">
+            {queuedCount > 0 && <span>{queuedCount} en cola</span>}
+            {activeCount > 0 && <span className="active">{activeCount} procesando</span>}
+            {completedCount > 0 && <span className="success">{completedCount} completado{completedCount !== 1 ? 's' : ''}</span>}
+            {errorCount > 0 && <span className="error">{errorCount} con error</span>}
+          </div>
+
+          <div className="queue-list">
+            {queue.map(item => (
+              <div key={item.id} className="glass-panel queue-item">
+                <div className="queue-item-header">
+                  <div className="queue-item-title">
+                    <FileText size={18} />
+                    <span>{item.name}</span>
+                    {item.duplicateWarning && <span className="badge-warning">duplicado</span>}
+                  </div>
+                  <div className="queue-item-actions">
+                    {item.phase === 'COMPLETED' && (
+                      <button className="btn-icon" onClick={() => toggleExpanded(item.id)} title="Ver datos extraídos">
+                        {item.expanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+                      </button>
+                    )}
+                    {item.phase !== 'UPLOADING' && !POLLABLE_PHASES.includes(item.phase) && (
+                      <button className="btn-icon" onClick={() => removeItem(item.id)} title="Quitar de la lista">
+                        <Trash2 size={16} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="progress-bar-track">
+                  <div
+                    className={`progress-bar-fill ${item.phase === 'ERROR' ? 'error' : ''} ${item.phase === 'COMPLETED' ? 'success' : ''}`}
+                    style={{ width: `${PHASE_PROGRESS[item.phase]}%` }}
+                  />
+                </div>
+                <div className="queue-item-status">
+                  {item.phase === 'ERROR' ? <XCircle size={14} />
+                    : item.phase === 'COMPLETED' ? <CheckCircle size={14} />
+                    : <Brain size={14} className="animate-pulse" />}
+                  <span>{PHASE_LABELS[item.phase]}</span>
+                </div>
+
+                {item.phase === 'ERROR' && (
+                  <div className="error-box">
+                    <p>{item.errorMsg}</p>
+                    <button className="btn btn-secondary" onClick={() => retryItem(item)}>Reintentar</button>
+                  </div>
+                )}
+
+                {item.phase === 'COMPLETED' && item.expanded && (
+                  <div style={{ marginTop: '1.5rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                      <h3>Datos Extraídos {DATA_TYPE_TITLES[getDataType(item)]}</h3>
+                      <button className="btn" onClick={() => handleSaveAndLearn(item)}>
+                        <Save size={18} /> Guardar Experiencia
+                      </button>
+                    </div>
+
+                    {DATA_TYPES.map(type => (
+                      item.extractedData[type]?.length > 0 && item.extractedData[type].map((entry, idx) => (
+                        <div key={`${type}-${idx}`} className="result-card" style={{ marginBottom: '1rem' }}>
+                          {DATA_TYPE_FIELDS[type].map(f => (
+                            <div className="result-row" key={f.key}>
+                              <span className="result-label">{f.label}</span>
+                              <span className="result-value">
+                                <input
+                                  type={f.type || 'text'}
+                                  value={entry[f.key] ?? ''}
+                                  onChange={(e) => handleCellChange(item.id, idx, f.key, type, e.target.value)}
+                                />
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      ))
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }

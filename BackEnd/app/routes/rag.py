@@ -156,7 +156,15 @@ def get_document_status(
     extracted_data = None
     if record.Status == "COMPLETED":
         from app.models.rag import Activos_BD, Comprobantes_BD, CFDI_BD, Identificacion_BD, ActaConstitutiva_BD
-        
+
+        document_type = None
+        if record.ExtractedData:
+            import json
+            try:
+                document_type = json.loads(record.ExtractedData).get("entity_type")
+            except (json.JSONDecodeError, AttributeError):
+                pass
+
         activos = db.query(Activos_BD).filter_by(AiDocumentId=record.DocumentId).all()
         activos_list = []
         for a in activos:
@@ -230,6 +238,9 @@ def get_document_status(
                 "ocr": ident.OCR,
                 "vigencia": ident.Vigencia,
                 "domicilio": ident.Domicilio,
+                "sexo": ident.Sexo,
+                "seccion": ident.Seccion,
+                "fecha_nacimiento": ident.FechaNacimiento,
                 "is_duplicate": ident.IsDuplicate,
                 "db_id": ident.Id
             })
@@ -252,7 +263,8 @@ def get_document_status(
             })
             
         extracted_data = {
-            "entity_type": record.EntityType, 
+            "entity_type": record.EntityType,
+            "document_type": document_type,
             "activos": activos_list,
             "comprobantes": comprobantes_list,
             "cfdis": cfdis_list,

@@ -86,6 +86,40 @@ def get_asset_info(asset_code: str) -> str:
         db.close()
 
 
+def _correct_curp_ocr_confusion(curp: Optional[str]) -> Optional[str]:
+    """
+    Corrige confusiones típicas de OCR ('0' vs 'O', 'I' vs '1') en un CURP,
+    usando el patrón posicional oficial de 18 caracteres:
+    LLLL DDDDDD L LL LLL A D
+    (4 letras, 6 dígitos, 1 letra, 2 letras, 3 letras, 1 alfanumérico, 1 dígito).
+    """
+    if not curp or len(curp) != 18:
+        return curp
+
+    is_letter_position = [
+        True, True, True, True,        # 1-4: letras
+        False, False, False, False, False, False,  # 5-10: dígitos (fecha nacimiento)
+        True,                          # 11: letra (H/M)
+        True, True,                    # 12-13: letras
+        True, True, True,              # 14-16: letras
+        None,                          # 17: alfanumérico, no se corrige
+        False,                         # 18: dígito
+    ]
+
+    chars = list(curp)
+    for i, expects_letter in enumerate(is_letter_position):
+        if expects_letter is True and chars[i] == '0':
+            chars[i] = 'O'
+        elif expects_letter is True and chars[i] == '1':
+            chars[i] = 'I'
+        elif expects_letter is False and chars[i] == 'O':
+            chars[i] = '0'
+        elif expects_letter is False and chars[i] == 'I':
+            chars[i] = '1'
+
+    return ''.join(chars)
+
+
 # ─── Servicio de IA ──────────────────────────────────────────────────────────
 
 @tool
@@ -381,9 +415,10 @@ class AIService:
         )
 
         llm = ChatGoogleGenerativeAI(
-            model="gemini-3.5-flash",
+            model="gemini-3.1-flash-lite",
             google_api_key=settings.gemini_api_key,
             temperature=0.1,
+            max_retries=4,
         )
 
         self._agent_executor = create_react_agent(
@@ -512,9 +547,10 @@ class AIService:
         logger.info(f"Analizando estructura de document_id: {document_id}")
         
         llm = ChatGoogleGenerativeAI(
-            model="gemini-3.5-flash",
+            model="gemini-3.1-flash-lite",
             google_api_key=settings.gemini_api_key,
             temperature=0.0,
+            max_retries=4,
         )
         
         structured_llm = llm.with_structured_output(DocumentExtraction)
@@ -522,16 +558,24 @@ class AIService:
         prompt = (
             "Analiza el siguiente documento y extrae los datos solicitados en formato de tabla (lista de objetos). "
             "Clasifícalo correctamente en 'Activo', 'Comprobante de Domicilio', 'Resguardo', 'Personal', 'CFDI', 'Identificación Oficial', 'Acta Constitutiva' u 'Otro'.\n"
-            "Presta especial atención a la sección de 'EXPERIENCIAS PREVIAS' si existe, para ver cómo el usuario corrigió extracciones anteriores y NO cometer los mismos errores.\n\n"
+            "Presta especial atención a la sección de 'EXPERIENCIAS PREVIAS' si existe, para ver cómo el usuario corrigió extracciones anteriores y NO cometer los mismos errores.\n"
+            "Para campos alfanuméricos como CURP, Clave de Elector y OCR: transcribe carácter por carácter con "
+            "mucho cuidado, sin adivinar. No confundas el dígito '0' con la letra 'O', ni la letra 'I' con el "
+            "dígito '1'. Usa el contexto del formato oficial de cada campo (ej. el CURP siempre tiene dígitos en "
+            "las posiciones 5-10 y letras en las posiciones 1-4) para decidir cuál es el carácter correcto.\n\n"
             f"{few_shot_prompt}\n"
             f"Documento a analizar:\n{context}"
         )
-        
+
         try:
             extraction = structured_llm.invoke(prompt)
-            if extraction:
-                return extraction.model_dump()
-            return None
+            if not extraction:
+                return None
+
+            for ident in extraction.identificaciones or []:
+                ident.curp = _correct_curp_ocr_confusion(ident.curp)
+
+            return extraction.model_dump()
         except Exception as e:
             logger.error(f"Error al analizar documento estructuradamente: {e}")
             return None

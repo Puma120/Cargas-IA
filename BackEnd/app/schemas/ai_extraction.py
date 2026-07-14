@@ -50,12 +50,38 @@ class IdentificacionExtraida(BaseModel):
         ..., description="El tipo de identificación oficial."
     )
     nombre: Optional[str] = Field(None, description="Nombre completo del titular tal como aparece en el documento.")
-    curp: Optional[str] = Field(None, description="CURP del titular (si está presente).")
-    clave_elector: Optional[str] = Field(None, description="Clave de elector (solo aplica para INE).")
+    curp: Optional[str] = Field(
+        None,
+        description=(
+            "CURP del titular, exactamente 18 caracteres con este patrón posicional estricto: "
+            "posiciones 1-4 SIEMPRE letras, posiciones 5-10 SIEMPRE dígitos (fecha de nacimiento AAMMDD), "
+            "posición 11 SIEMPRE letra (H o M), posiciones 12-13 SIEMPRE letras (estado), "
+            "posiciones 14-16 SIEMPRE letras, posición 17 alfanumérico, posición 18 SIEMPRE dígito. "
+            "CUIDADO: no confundas el dígito '0' (cero) con la letra 'O', ni la letra 'I' con el dígito '1'; "
+            "usa el patrón posicional de arriba para decidir cuál es correcto en cada caso."
+        )
+    )
+    clave_elector: Optional[str] = Field(
+        None,
+        description=(
+            "Clave de elector del INE (18 caracteres, solo aplica para INE), etiquetada en la credencial como "
+            "'CLAVE DE ELECTOR'. Primeros 6 caracteres son letras, el resto son dígitos. "
+            "CUIDADO: no confundas el dígito '0' con la letra 'O' — revisa el trazo del carácter con cuidado."
+        )
+    )
     numero_identificacion: Optional[str] = Field(None, description="Número principal: Número de Pasaporte o Número de Cédula (si no es INE).")
-    ocr: Optional[str] = Field(None, description="Número OCR (solo aplica para INE).")
-    vigencia: Optional[str] = Field(None, description="Año de vigencia o vencimiento del documento.")
+    ocr: Optional[str] = Field(None, description="Número OCR (solo aplica para INE), son puros dígitos.")
+    vigencia: Optional[str] = Field(
+        None,
+        description=(
+            "Rango de vigencia de la credencial tal como aparece impreso (ej. '2021-2031' o '2021 - 2027'), "
+            "etiquetado como 'VIGENCIA' en el documento. No lo confundas con 'AÑO DE REGISTRO' ni con la 'SECCIÓN'."
+        )
+    )
     domicilio: Optional[str] = Field(None, description="Domicilio completo (solo si aparece en el documento).")
+    sexo: Optional[Literal["H", "M"]] = Field(None, description="Sexo del titular tal como aparece en el documento (H o M, solo aplica para INE).")
+    seccion: Optional[str] = Field(None, description="Número de sección electoral (solo aplica para INE), etiquetado como 'SECCIÓN'.")
+    fecha_nacimiento: Optional[str] = Field(None, description="Fecha de nacimiento del titular tal como aparece impresa (ej. '28/09/2003').")
 
 class ActaConstitutivaExtraida(BaseModel):
     """Campos de un Acta Constitutiva o escritura pública de constitución de empresa."""

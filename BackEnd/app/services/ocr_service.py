@@ -30,7 +30,7 @@ def _pdf_to_text_tesseract(pdf_path: str) -> str:
 
     try:
         import pytesseract
-        from PIL import Image
+        from PIL import Image, ImageOps
         import io
     except ImportError as e:
         raise RuntimeError(
@@ -52,8 +52,15 @@ def _pdf_to_text_tesseract(pdf_path: str) -> str:
         img_bytes = pix.tobytes("png")
         img = Image.open(io.BytesIO(img_bytes))
 
-        # Tesseract: español como idioma principal, ingles como fallback
-        text = pytesseract.image_to_string(img, lang="spa+eng", config="--psm 3")
+        # Escala de grises + autocontraste: mejora drásticamente la lectura en
+        # escaneos con fondos de seguridad/hologramas (ej. credenciales oficiales).
+        img = ImageOps.grayscale(img)
+        img = ImageOps.autocontrast(img, cutoff=2)
+
+        # Tesseract: español como idioma principal, ingles como fallback.
+        # psm 6 (bloque uniforme de texto) capta mejor los layouts densos en
+        # columnas de identificaciones oficiales que psm 3 (segmentación automática).
+        text = pytesseract.image_to_string(img, lang="spa+eng", config="--psm 6")
         pages_text.append(text)
         logger.debug(f"Página {page_num + 1}/{len(doc)} procesada con Tesseract.")
 

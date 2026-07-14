@@ -161,6 +161,9 @@ class Identificacion_BD(Base):
     OCR: Mapped[str | None] = mapped_column(String(50), nullable=True)
     Vigencia: Mapped[str | None] = mapped_column(String(10), nullable=True)
     Domicilio: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    Sexo: Mapped[str | None] = mapped_column(String(1), nullable=True)
+    Seccion: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    FechaNacimiento: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
     IsDuplicate: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
