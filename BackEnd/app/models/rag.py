@@ -44,6 +44,15 @@ class AiDocument(Base):
     # Relación a los comprobantes de domicilio extraídos
     ComprobantesExtraidos = sqlalchemy.orm.relationship("Comprobantes_BD", back_populates="DocumentoOrigen", cascade="all, delete-orphan")
 
+    # Relación a los CFDIs extraídos
+    CfdisExtraidos = sqlalchemy.orm.relationship("CFDI_BD", back_populates="DocumentoOrigen", cascade="all, delete-orphan")
+
+    # Relación a las identificaciones extraídas
+    IdentificacionesExtraidas = sqlalchemy.orm.relationship("Identificacion_BD", back_populates="DocumentoOrigen", cascade="all, delete-orphan")
+
+    # Relación a las actas constitutivas extraídas
+    ActasConstitutivasExtraidas = sqlalchemy.orm.relationship("ActaConstitutiva_BD", back_populates="DocumentoOrigen", cascade="all, delete-orphan")
+
 
 
 
@@ -108,3 +117,75 @@ class Comprobantes_BD(Base):
     
     # Relación inversa
     DocumentoOrigen = sqlalchemy.orm.relationship("AiDocument", back_populates="ComprobantesExtraidos")
+
+
+class CFDI_BD(Base):
+    """
+    Modelo que almacena cada CFDI (Comprobante Fiscal Digital por Internet) extraído.
+    """
+    __tablename__ = "CFDI_BD"
+
+    Id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    AiDocumentId: Mapped[int] = mapped_column(Integer, ForeignKey("AiDocument.DocumentId"), nullable=False)
+
+    UUID: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    RfcEmisor: Mapped[str | None] = mapped_column(String(13), nullable=True)
+    RfcReceptor: Mapped[str | None] = mapped_column(String(13), nullable=True)
+    Fecha: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    Subtotal: Mapped[float | None] = mapped_column(Float, nullable=True)   # MXN
+    Iva: Mapped[float | None] = mapped_column(Float, nullable=True)         # MXN
+    Total: Mapped[float | None] = mapped_column(Float, nullable=True)       # MXN
+    MetodoPago: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    FormaPago: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    Moneda: Mapped[str | None] = mapped_column(String(10), nullable=True)
+
+    IsDuplicate: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    DocumentoOrigen = sqlalchemy.orm.relationship("AiDocument", back_populates="CfdisExtraidos")
+
+
+class Identificacion_BD(Base):
+    """
+    Modelo que almacena los datos extraídos de identificaciones oficiales (INE, Pasaporte, Cédula).
+    """
+    __tablename__ = "Identificacion_BD"
+
+    Id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    AiDocumentId: Mapped[int] = mapped_column(Integer, ForeignKey("AiDocument.DocumentId"), nullable=False)
+
+    TipoIdentificacion: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    Nombre: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    CURP: Mapped[str | None] = mapped_column(String(18), nullable=True)
+    ClaveElector: Mapped[str | None] = mapped_column(String(18), nullable=True)
+    NumeroIdentificacion: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    OCR: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    Vigencia: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    Domicilio: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    IsDuplicate: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    DocumentoOrigen = sqlalchemy.orm.relationship("AiDocument", back_populates="IdentificacionesExtraidas")
+
+
+class ActaConstitutiva_BD(Base):
+    """
+    Modelo que almacena los datos extraídos de actas constitutivas / escrituras notariales.
+    """
+    __tablename__ = "ActaConstitutiva_BD"
+
+    Id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    AiDocumentId: Mapped[int] = mapped_column(Integer, ForeignKey("AiDocument.DocumentId"), nullable=False)
+
+    RazonSocial: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    RFC: Mapped[str | None] = mapped_column(String(13), nullable=True)
+    FechaConstitucion: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    ObjetoSocial: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    RepresentanteLegal: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    Notaria: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    Ciudad: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    Notario: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    NumeroEscritura: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    IsDuplicate: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    DocumentoOrigen = sqlalchemy.orm.relationship("AiDocument", back_populates="ActasConstitutivasExtraidas")

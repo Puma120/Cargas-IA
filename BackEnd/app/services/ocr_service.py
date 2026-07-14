@@ -1,7 +1,9 @@
 """Servicio de OCR para extracción de texto de PDFs.
 
-Usa PaddleOCR para reconocer texto en imágenes/PDFs
+Usa Tesseract (via pytesseract) + PyMuPDF para reconocer texto en PDFs
 y LangChain text splitters para generar chunks semánticos.
+
+Flujo: PDF → PyMuPDF (rasteriza página a imagen) → Tesseract OCR → texto.
 """
 import logging
 from pathlib import Path
@@ -11,42 +13,57 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 logger = logging.getLogger(__name__)
 
-# Motor de OCR con inicialización lazy (evita fallos al importar)
-_ocr_engine = None
-_ocr_init_error: Optional[str] = None
+# DPI de renderizado de páginas. 500 es calidad ultra alta para escaneos difíciles.
+# Garantiza que el OCR pueda leer la letra más diminuta de identificaciones oficiales.
+_RENDER_DPI = 500
 
 
-def _get_ocr_engine():
-    """Inicializa PaddleOCR de forma lazy en el primer uso."""
-    global _ocr_engine, _ocr_init_error
-
-    if _ocr_engine is not None:
-        return _ocr_engine
-
-    if _ocr_init_error is not None:
-        raise RuntimeError(f"PaddleOCR no pudo inicializarse: {_ocr_init_error}")
+def _pdf_to_text_tesseract(pdf_path: str) -> str:
+    """
+    Convierte cada página del PDF a imagen con PyMuPDF y aplica Tesseract OCR.
+    Retorna el texto completo concatenado de todas las páginas.
+    """
+    try:
+        import fitz  # PyMuPDF
+    except ImportError as e:
+        raise RuntimeError("PyMuPDF no está instalado. Agrega 'pymupdf' a requirements.txt.") from e
 
     try:
-        from paddleocr import PaddleOCR
-        # NOTA: PaddleOCR >= 2.9 / PaddlePaddle >= 3.0 ya no aceptan `use_gpu`.
-        # El runtime detecta automáticamente si hay GPU disponible; en CPU-only
-        # simplemente se omite el parámetro.
-        _ocr_engine = PaddleOCR(
-            use_textline_orientation=True,
-            lang='es',
-            enable_mkldnn=False
-        )
-        logger.info("PaddleOCR inicializado correctamente (CPU mode).")
-        return _ocr_engine
-    except Exception as e:
-        _ocr_init_error = str(e)
-        logger.error(f"Error inicializando PaddleOCR: {e}")
-        raise RuntimeError(f"PaddleOCR no pudo inicializarse: {e}")
+        import pytesseract
+        from PIL import Image
+        import io
+    except ImportError as e:
+        raise RuntimeError(
+            "pytesseract o Pillow no están instalados. "
+            "Agrega 'pytesseract' y 'Pillow' a requirements.txt."
+        ) from e
+
+    doc = fitz.open(pdf_path)
+    pages_text: list[str] = []
+
+    zoom = _RENDER_DPI / 72  # 72 DPI es la resolución base de PDF
+    mat = fitz.Matrix(zoom, zoom)
+
+    for page_num in range(len(doc)):
+        page = doc[page_num]
+        pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+
+        # Convertir el pixmap a imagen PIL directamente desde bytes (sin disco)
+        img_bytes = pix.tobytes("png")
+        img = Image.open(io.BytesIO(img_bytes))
+
+        # Tesseract: español como idioma principal, ingles como fallback
+        text = pytesseract.image_to_string(img, lang="spa+eng", config="--psm 3")
+        pages_text.append(text)
+        logger.debug(f"Página {page_num + 1}/{len(doc)} procesada con Tesseract.")
+
+    doc.close()
+    return "\n\n".join(pages_text)
 
 
 class OCRService:
     def __init__(self):
-        # Configuramos el text splitter de LangChain para el RAG
+        # Text splitter de LangChain para el RAG
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,
             chunk_overlap=200,
@@ -56,45 +73,19 @@ class OCRService:
 
     def extract_text_from_pdf(self, pdf_path: str) -> str:
         """
-        Extrae texto de un archivo PDF usando PaddleOCR visualmente de manera estricta.
+        Extrae texto de un archivo PDF usando Tesseract OCR.
+        Soporta PDFs digitales y escaneados (imagen).
         """
-        engine = _get_ocr_engine()
-
         if not Path(pdf_path).exists():
             raise FileNotFoundError(f"El archivo {pdf_path} no existe.")
 
-        logger.info(f"Iniciando extracción OCR estricta (visual) para: {pdf_path}")
+        logger.info(f"Iniciando extracción OCR (Tesseract) para: {pdf_path}")
 
-        try:
-            result = engine.ocr(pdf_path)
+        text = _pdf_to_text_tesseract(pdf_path)
 
-            full_text = []
-            if result:
-                for idx, page in enumerate(result):
-                    if page:
-                        # Soporte para PaddleOCR v3 / PaddleX
-                        if isinstance(page, dict) and "rec_texts" in page:
-                            texts = page["rec_texts"]
-                            if texts:
-                                # Filtrar posibles Nones
-                                full_text.extend([t for t in texts if t])
-                        # Soporte para PaddleOCR v2
-                        elif isinstance(page, list):
-                            for line in page:
-                                if isinstance(line, (list, tuple)) and len(line) >= 2:
-                                    text_tuple = line[1]
-                                    if isinstance(text_tuple, (list, tuple)) and len(text_tuple) > 0:
-                                        text = text_tuple[0]
-                                        if text:
-                                            full_text.append(text)
-
-            final_text = "\n".join(full_text)
-            logger.info(f"Extracción OCR completada. {len(full_text)} líneas extraídas.")
-            return final_text
-
-        except Exception as e:
-            logger.error(f"Error durante OCR de {pdf_path}: {e}")
-            raise
+        line_count = len([l for l in text.splitlines() if l.strip()])
+        logger.info(f"Extracción OCR completada. {line_count} líneas con contenido extraídas.")
+        return text
 
     def get_document_chunks(self, text: str) -> list[str]:
         """

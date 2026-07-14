@@ -94,9 +94,25 @@ function App() {
   const handleSaveAndLearn = async () => {
     if (!extractedData || !documentInfo) return;
     try {
-      const isComprobante = extractedData.comprobantes && extractedData.comprobantes.length > 0;
-      const dataToSave = isComprobante ? extractedData.comprobantes : extractedData.activos;
-      const dataType = isComprobante ? 'comprobantes' : 'activos';
+      let dataToSave = [];
+      let dataType = 'activos';
+
+      if (extractedData.comprobantes?.length > 0) {
+        dataToSave = extractedData.comprobantes;
+        dataType = 'comprobantes';
+      } else if (extractedData.cfdis?.length > 0) {
+        dataToSave = extractedData.cfdis;
+        dataType = 'cfdis';
+      } else if (extractedData.identificaciones?.length > 0) {
+        dataToSave = extractedData.identificaciones;
+        dataType = 'identificaciones';
+      } else if (extractedData.actas_constitutivas?.length > 0) {
+        dataToSave = extractedData.actas_constitutivas;
+        dataType = 'actas_constitutivas';
+      } else {
+        dataToSave = extractedData.activos;
+        dataType = 'activos';
+      }
 
       await saveAndLearn(
         `${documentInfo.entity_type}_${documentInfo.document_id}`,
@@ -115,10 +131,18 @@ function App() {
     }
   };
 
-  const handleCellChange = (e, idx, field, type = 'activos') => {
+  const handleCellChange = (e, idx, field, type) => {
     const newData = [...extractedData[type]];
     newData[idx] = { ...newData[idx], [field]: e.target.value };
     setExtractedData({ ...extractedData, [type]: newData });
+  };
+
+  const getEntityTitle = () => {
+    if (extractedData.comprobantes?.length > 0) return '(Comprobantes)';
+    if (extractedData.cfdis?.length > 0) return '(CFDIs)';
+    if (extractedData.identificaciones?.length > 0) return '(Identificaciones Oficiales)';
+    if (extractedData.actas_constitutivas?.length > 0) return '(Actas Constitutivas)';
+    return '(Activos)';
   };
 
   return (
@@ -214,77 +238,216 @@ function App() {
         {extractedData && (
           <div style={{marginTop: '2rem'}}>
             <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem'}}>
-              <h2>Datos Extraídos {extractedData.comprobantes?.length > 0 ? '(Comprobantes)' : '(Activos)'}</h2>
+              <h2>Datos Extraídos {getEntityTitle()}</h2>
               <button className="btn" onClick={handleSaveAndLearn}>
                 <Save size={20} /> Guardar Experiencia
               </button>
             </div>
             
-            {extractedData.comprobantes?.length > 0 ? (
-              extractedData.comprobantes.map((comp, idx) => (
-                <div key={idx} className="result-card" style={{marginBottom: '1rem'}}>
-                  <div className="result-row">
-                    <span className="result-label">Tipo Servicio</span>
-                    <span className="result-value">
-                      <input value={comp.tipo_servicio || ''} onChange={(e) => handleCellChange(e, idx, 'tipo_servicio', 'comprobantes')} />
-                    </span>
-                  </div>
-                  <div className="result-row">
-                    <span className="result-label">Nombre</span>
-                    <span className="result-value">
-                      <input value={comp.nombre || ''} onChange={(e) => handleCellChange(e, idx, 'nombre', 'comprobantes')} />
-                    </span>
-                  </div>
-                  <div className="result-row">
-                    <span className="result-label">Domicilio</span>
-                    <span className="result-value">
-                      <input value={comp.domicilio || ''} onChange={(e) => handleCellChange(e, idx, 'domicilio', 'comprobantes')} />
-                    </span>
-                  </div>
-                  <div className="result-row">
-                    <span className="result-label">Periodo</span>
-                    <span className="result-value">
-                      <input value={comp.periodo_facturacion || ''} onChange={(e) => handleCellChange(e, idx, 'periodo_facturacion', 'comprobantes')} />
-                    </span>
-                  </div>
-                  <div className="result-row">
-                    <span className="result-label">Monto</span>
-                    <span className="result-value">
-                      <input value={comp.monto_a_pagar || ''} type="number" onChange={(e) => handleCellChange(e, idx, 'monto_a_pagar', 'comprobantes')} />
-                    </span>
-                  </div>
+            {extractedData.comprobantes?.length > 0 && extractedData.comprobantes.map((comp, idx) => (
+              <div key={idx} className="result-card" style={{marginBottom: '1rem'}}>
+                <div className="result-row">
+                  <span className="result-label">Tipo Servicio</span>
+                  <span className="result-value">
+                    <input value={comp.tipo_servicio || ''} onChange={(e) => handleCellChange(e, idx, 'tipo_servicio', 'comprobantes')} />
+                  </span>
                 </div>
-              ))
-            ) : (
-              extractedData.activos?.map((activo, idx) => (
-                <div key={idx} className="result-card" style={{marginBottom: '1rem'}}>
-                  <div className="result-row">
-                    <span className="result-label">Clave</span>
-                    <span className="result-value">
-                      <input value={activo.clave_vieja || ''} onChange={(e) => handleCellChange(e, idx, 'clave_vieja', 'activos')} />
-                    </span>
-                  </div>
-                  <div className="result-row">
-                    <span className="result-label">Descripción</span>
-                    <span className="result-value">
-                      <input value={activo.nombre_activo || ''} onChange={(e) => handleCellChange(e, idx, 'nombre_activo', 'activos')} />
-                    </span>
-                  </div>
-                  <div className="result-row">
-                    <span className="result-label">No. Serie</span>
-                    <span className="result-value">
-                      <input value={activo.numero_serie || ''} onChange={(e) => handleCellChange(e, idx, 'numero_serie', 'activos')} />
-                    </span>
-                  </div>
-                  <div className="result-row">
-                    <span className="result-label">Custodio</span>
-                    <span className="result-value">
-                      <input value={activo.custodio || ''} onChange={(e) => handleCellChange(e, idx, 'custodio', 'activos')} />
-                    </span>
-                  </div>
+                <div className="result-row">
+                  <span className="result-label">Nombre</span>
+                  <span className="result-value">
+                    <input value={comp.nombre || ''} onChange={(e) => handleCellChange(e, idx, 'nombre', 'comprobantes')} />
+                  </span>
                 </div>
-              ))
-            )}
+                <div className="result-row">
+                  <span className="result-label">Domicilio</span>
+                  <span className="result-value">
+                    <input value={comp.domicilio || ''} onChange={(e) => handleCellChange(e, idx, 'domicilio', 'comprobantes')} />
+                  </span>
+                </div>
+                <div className="result-row">
+                  <span className="result-label">Periodo</span>
+                  <span className="result-value">
+                    <input value={comp.periodo_facturacion || ''} onChange={(e) => handleCellChange(e, idx, 'periodo_facturacion', 'comprobantes')} />
+                  </span>
+                </div>
+                <div className="result-row">
+                  <span className="result-label">Monto</span>
+                  <span className="result-value">
+                    <input value={comp.monto_a_pagar || ''} type="number" onChange={(e) => handleCellChange(e, idx, 'monto_a_pagar', 'comprobantes')} />
+                  </span>
+                </div>
+              </div>
+            ))}
+
+            {extractedData.cfdis?.length > 0 && extractedData.cfdis.map((cfdi, idx) => (
+              <div key={idx} className="result-card" style={{marginBottom: '1rem'}}>
+                <div className="result-row">
+                  <span className="result-label">UUID</span>
+                  <span className="result-value">
+                    <input value={cfdi.uuid || ''} onChange={(e) => handleCellChange(e, idx, 'uuid', 'cfdis')} />
+                  </span>
+                </div>
+                <div className="result-row">
+                  <span className="result-label">RFC Emisor</span>
+                  <span className="result-value">
+                    <input value={cfdi.rfc_emisor || ''} onChange={(e) => handleCellChange(e, idx, 'rfc_emisor', 'cfdis')} />
+                  </span>
+                </div>
+                <div className="result-row">
+                  <span className="result-label">Fecha</span>
+                  <span className="result-value">
+                    <input value={cfdi.fecha || ''} onChange={(e) => handleCellChange(e, idx, 'fecha', 'cfdis')} />
+                  </span>
+                </div>
+                <div className="result-row">
+                  <span className="result-label">Total MXN</span>
+                  <span className="result-value">
+                    <input value={cfdi.total || ''} type="number" onChange={(e) => handleCellChange(e, idx, 'total', 'cfdis')} />
+                  </span>
+                </div>
+              </div>
+            ))}
+
+            {extractedData.identificaciones?.length > 0 && extractedData.identificaciones.map((ident, idx) => (
+              <div key={idx} className="result-card" style={{marginBottom: '1rem'}}>
+                <div className="result-row">
+                  <span className="result-label">Tipo ID</span>
+                  <span className="result-value">
+                    <input value={ident.tipo_identificacion || ''} onChange={(e) => handleCellChange(e, idx, 'tipo_identificacion', 'identificaciones')} />
+                  </span>
+                </div>
+                <div className="result-row">
+                  <span className="result-label">Nombre</span>
+                  <span className="result-value">
+                    <input value={ident.nombre || ''} onChange={(e) => handleCellChange(e, idx, 'nombre', 'identificaciones')} />
+                  </span>
+                </div>
+                <div className="result-row">
+                  <span className="result-label">CURP</span>
+                  <span className="result-value">
+                    <input value={ident.curp || ''} onChange={(e) => handleCellChange(e, idx, 'curp', 'identificaciones')} />
+                  </span>
+                </div>
+                <div className="result-row">
+                  <span className="result-label">Clave Elector</span>
+                  <span className="result-value">
+                    <input value={ident.clave_elector || ''} onChange={(e) => handleCellChange(e, idx, 'clave_elector', 'identificaciones')} />
+                  </span>
+                </div>
+                <div className="result-row">
+                  <span className="result-label">Número ID</span>
+                  <span className="result-value">
+                    <input value={ident.numero_identificacion || ''} onChange={(e) => handleCellChange(e, idx, 'numero_identificacion', 'identificaciones')} />
+                  </span>
+                </div>
+                <div className="result-row">
+                  <span className="result-label">Domicilio</span>
+                  <span className="result-value">
+                    <input value={ident.domicilio || ''} onChange={(e) => handleCellChange(e, idx, 'domicilio', 'identificaciones')} />
+                  </span>
+                </div>
+                <div className="result-row">
+                  <span className="result-label">OCR</span>
+                  <span className="result-value">
+                    <input value={ident.ocr || ''} onChange={(e) => handleCellChange(e, idx, 'ocr', 'identificaciones')} />
+                  </span>
+                </div>
+                <div className="result-row">
+                  <span className="result-label">Vigencia</span>
+                  <span className="result-value">
+                    <input value={ident.vigencia || ''} onChange={(e) => handleCellChange(e, idx, 'vigencia', 'identificaciones')} />
+                  </span>
+                </div>
+              </div>
+            ))}
+
+            {extractedData.actas_constitutivas?.length > 0 && extractedData.actas_constitutivas.map((acta, idx) => (
+              <div key={idx} className="result-card" style={{marginBottom: '1rem'}}>
+                <div className="result-row">
+                  <span className="result-label">Razón Social</span>
+                  <span className="result-value">
+                    <input value={acta.razon_social || ''} onChange={(e) => handleCellChange(e, idx, 'razon_social', 'actas_constitutivas')} />
+                  </span>
+                </div>
+                <div className="result-row">
+                  <span className="result-label">RFC</span>
+                  <span className="result-value">
+                    <input value={acta.rfc || ''} onChange={(e) => handleCellChange(e, idx, 'rfc', 'actas_constitutivas')} />
+                  </span>
+                </div>
+                <div className="result-row">
+                  <span className="result-label">Fecha</span>
+                  <span className="result-value">
+                    <input value={acta.fecha_constitucion || ''} onChange={(e) => handleCellChange(e, idx, 'fecha_constitucion', 'actas_constitutivas')} />
+                  </span>
+                </div>
+                <div className="result-row">
+                  <span className="result-label">Objeto Social</span>
+                  <span className="result-value">
+                    <input value={acta.objeto_social || ''} onChange={(e) => handleCellChange(e, idx, 'objeto_social', 'actas_constitutivas')} />
+                  </span>
+                </div>
+                <div className="result-row">
+                  <span className="result-label">Representante</span>
+                  <span className="result-value">
+                    <input value={acta.representante_legal || ''} onChange={(e) => handleCellChange(e, idx, 'representante_legal', 'actas_constitutivas')} />
+                  </span>
+                </div>
+                <div className="result-row">
+                  <span className="result-label">Notaría</span>
+                  <span className="result-value">
+                    <input value={acta.notaria || ''} onChange={(e) => handleCellChange(e, idx, 'notaria', 'actas_constitutivas')} />
+                  </span>
+                </div>
+                <div className="result-row">
+                  <span className="result-label">Ciudad</span>
+                  <span className="result-value">
+                    <input value={acta.ciudad || ''} onChange={(e) => handleCellChange(e, idx, 'ciudad', 'actas_constitutivas')} />
+                  </span>
+                </div>
+                <div className="result-row">
+                  <span className="result-label">Notario</span>
+                  <span className="result-value">
+                    <input value={acta.notario || ''} onChange={(e) => handleCellChange(e, idx, 'notario', 'actas_constitutivas')} />
+                  </span>
+                </div>
+                <div className="result-row">
+                  <span className="result-label">No. Escritura</span>
+                  <span className="result-value">
+                    <input value={acta.numero_escritura || ''} onChange={(e) => handleCellChange(e, idx, 'numero_escritura', 'actas_constitutivas')} />
+                  </span>
+                </div>
+              </div>
+            ))}
+
+            {extractedData.activos?.length > 0 && extractedData.activos.map((activo, idx) => (
+              <div key={idx} className="result-card" style={{marginBottom: '1rem'}}>
+                <div className="result-row">
+                  <span className="result-label">Clave</span>
+                  <span className="result-value">
+                    <input value={activo.clave_vieja || ''} onChange={(e) => handleCellChange(e, idx, 'clave_vieja', 'activos')} />
+                  </span>
+                </div>
+                <div className="result-row">
+                  <span className="result-label">Descripción</span>
+                  <span className="result-value">
+                    <input value={activo.nombre_activo || ''} onChange={(e) => handleCellChange(e, idx, 'nombre_activo', 'activos')} />
+                  </span>
+                </div>
+                <div className="result-row">
+                  <span className="result-label">No. Serie</span>
+                  <span className="result-value">
+                    <input value={activo.numero_serie || ''} onChange={(e) => handleCellChange(e, idx, 'numero_serie', 'activos')} />
+                  </span>
+                </div>
+                <div className="result-row">
+                  <span className="result-label">Custodio</span>
+                  <span className="result-value">
+                    <input value={activo.custodio || ''} onChange={(e) => handleCellChange(e, idx, 'custodio', 'activos')} />
+                  </span>
+                </div>
+              </div>
+            ))}
           </div>
         )}
       </div>

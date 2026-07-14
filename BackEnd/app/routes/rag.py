@@ -155,7 +155,7 @@ def get_document_status(
 
     extracted_data = None
     if record.Status == "COMPLETED":
-        from app.models.rag import Activos_BD, Comprobantes_BD
+        from app.models.rag import Activos_BD, Comprobantes_BD, CFDI_BD, Identificacion_BD, ActaConstitutiva_BD
         
         activos = db.query(Activos_BD).filter_by(AiDocumentId=record.DocumentId).all()
         activos_list = []
@@ -199,11 +199,65 @@ def get_document_status(
                 "is_duplicate": c.IsDuplicate,
                 "db_id": c.Id
             })
+
+        cfdis = db.query(CFDI_BD).filter_by(AiDocumentId=record.DocumentId).all()
+        cfdis_list = []
+        for cf in cfdis:
+            cfdis_list.append({
+                "uuid": cf.UUID,
+                "rfc_emisor": cf.RfcEmisor,
+                "rfc_receptor": cf.RfcReceptor,
+                "fecha": cf.Fecha,
+                "subtotal": cf.Subtotal,
+                "iva": cf.Iva,
+                "total": cf.Total,
+                "metodo_pago": cf.MetodoPago,
+                "forma_pago": cf.FormaPago,
+                "moneda": cf.Moneda,
+                "is_duplicate": cf.IsDuplicate,
+                "db_id": cf.Id
+            })
+
+        identificaciones = db.query(Identificacion_BD).filter_by(AiDocumentId=record.DocumentId).all()
+        ident_list = []
+        for ident in identificaciones:
+            ident_list.append({
+                "tipo_identificacion": ident.TipoIdentificacion,
+                "nombre": ident.Nombre,
+                "curp": ident.CURP,
+                "clave_elector": ident.ClaveElector,
+                "numero_identificacion": ident.NumeroIdentificacion,
+                "ocr": ident.OCR,
+                "vigencia": ident.Vigencia,
+                "domicilio": ident.Domicilio,
+                "is_duplicate": ident.IsDuplicate,
+                "db_id": ident.Id
+            })
+
+        actas = db.query(ActaConstitutiva_BD).filter_by(AiDocumentId=record.DocumentId).all()
+        actas_list = []
+        for ac in actas:
+            actas_list.append({
+                "razon_social": ac.RazonSocial,
+                "rfc": ac.RFC,
+                "fecha_constitucion": ac.FechaConstitucion,
+                "objeto_social": ac.ObjetoSocial,
+                "representante_legal": ac.RepresentanteLegal,
+                "notaria": ac.Notaria,
+                "ciudad": ac.Ciudad,
+                "notario": ac.Notario,
+                "numero_escritura": ac.NumeroEscritura,
+                "is_duplicate": ac.IsDuplicate,
+                "db_id": ac.Id
+            })
             
         extracted_data = {
             "entity_type": record.EntityType, 
             "activos": activos_list,
-            "comprobantes": comprobantes_list
+            "comprobantes": comprobantes_list,
+            "cfdis": cfdis_list,
+            "identificaciones": ident_list,
+            "actas_constitutivas": actas_list,
         }
 
     return {
@@ -212,3 +266,4 @@ def get_document_status(
         "extracted_data": extracted_data,
         "created_at": record.CreatedAt.isoformat() if record.CreatedAt else None,
     }
+

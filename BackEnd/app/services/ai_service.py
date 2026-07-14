@@ -159,6 +159,179 @@ def save_asset_to_db(
     finally:
         db.close()
 
+@tool
+def save_cfdi_to_db(
+    uuid: str,
+    rfc_emisor: str = None,
+    rfc_receptor: str = None,
+    fecha: str = None,
+    subtotal: float = None,
+    iva: float = None,
+    total: float = None,
+    metodo_pago: str = None,
+    forma_pago: str = None,
+    moneda: str = None
+) -> str:
+    """
+    Guarda un CFDI (Comprobante Fiscal Digital por Internet) extraído de un documento en la base de datos.
+    El campo 'uuid' es el único requerido. Los valores monetarios (subtotal, iva, total) deben ser
+    números en pesos mexicanos (MXN) sin símbolo de moneda.
+    NO USES esta herramienta si el 'uuid' está vacío o ausente.
+    """
+    logger.info(f"Tool ejecutado: Guardando CFDI en BD: UUID={uuid}")
+
+    if not uuid:
+        return "Error: Falta el UUID del CFDI. Es el campo requerido. Por favor solícitalo al usuario."
+
+    from app.core.database import SessionLocal
+    from app.models.rag import CFDI_BD
+
+    db = SessionLocal()
+    try:
+        # Verificar duplicado por UUID
+        existing = db.query(CFDI_BD).filter(CFDI_BD.UUID == uuid).first()
+        is_duplicate = existing is not None
+
+        nuevo_cfdi = CFDI_BD(
+            AiDocumentId=0,  # Se actualiza en el flujo de procesamiento background
+            UUID=uuid,
+            RfcEmisor=rfc_emisor,
+            RfcReceptor=rfc_receptor,
+            Fecha=fecha,
+            Subtotal=subtotal,
+            Iva=iva,
+            Total=total,
+            MetodoPago=metodo_pago,
+            FormaPago=forma_pago,
+            Moneda=moneda or "MXN",
+            IsDuplicate=is_duplicate
+        )
+        db.add(nuevo_cfdi)
+        db.commit()
+        dup_msg = " (DUPLICADO: ya existía un CFDI con este UUID)" if is_duplicate else ""
+        return f"Éxito: CFDI con UUID '{uuid}' guardado en la base de datos.{dup_msg}"
+    except Exception as e:
+        logger.error(f"Error en save_cfdi_to_db: {e}")
+        return f"Error interno al intentar guardar el CFDI: {str(e)}"
+    finally:
+        db.close()
+
+
+@tool
+def save_identificacion_to_db(
+    tipo_identificacion: str,
+    nombre: str,
+    curp: str = None,
+    clave_elector: str = None,
+    numero_identificacion: str = None,
+    ocr: str = None,
+    vigencia: str = None,
+    domicilio: str = None
+) -> str:
+    """
+    Guarda los datos de una Identificación Oficial (INE, Pasaporte, Cédula Profesional) en la base de datos.
+    Los campos 'tipo_identificacion' y 'nombre' son requeridos.
+    NO USES esta herramienta si el 'nombre' o el 'tipo_identificacion' están vacíos o ausentes.
+    """
+    logger.info(f"Tool ejecutado: Guardando Identificacion en BD: {nombre} ({tipo_identificacion})")
+
+    if not nombre or not tipo_identificacion:
+        return "Error: Faltan datos requeridos (nombre o tipo_identificacion). Por favor solícitalos al usuario."
+
+    from app.core.database import SessionLocal
+    from app.models.rag import Identificacion_BD
+
+    db = SessionLocal()
+    try:
+        # Verificar duplicado por CURP o numero_identificacion
+        is_duplicate = False
+        if curp:
+            is_duplicate = db.query(Identificacion_BD).filter(Identificacion_BD.CURP == curp).count() > 0
+        elif numero_identificacion:
+            is_duplicate = db.query(Identificacion_BD).filter(Identificacion_BD.NumeroIdentificacion == numero_identificacion).count() > 0
+
+        nueva_ident = Identificacion_BD(
+            AiDocumentId=0,
+            TipoIdentificacion=tipo_identificacion,
+            Nombre=nombre,
+            CURP=curp,
+            ClaveElector=clave_elector,
+            NumeroIdentificacion=numero_identificacion,
+            OCR=ocr,
+            Vigencia=vigencia,
+            Domicilio=domicilio,
+            IsDuplicate=is_duplicate
+        )
+        db.add(nueva_ident)
+        db.commit()
+        dup_msg = " (DUPLICADO: ya existía una identificación con esta CURP/número)" if is_duplicate else ""
+        return f"Éxito: Identificación de '{nombre}' guardada en la base de datos.{dup_msg}"
+    except Exception as e:
+        logger.error(f"Error en save_identificacion_to_db: {e}")
+        return f"Error interno al intentar guardar la Identificación: {str(e)}"
+    finally:
+        db.close()
+
+
+@tool
+def save_acta_constitutiva_to_db(
+    razon_social: str,
+    rfc: str = None,
+    fecha_constitucion: str = None,
+    objeto_social: str = None,
+    representante_legal: str = None,
+    notaria: str = None,
+    ciudad: str = None,
+    notario: str = None,
+    numero_escritura: str = None
+) -> str:
+    """
+    Guarda los datos de un Acta Constitutiva (escritura notarial de empresa) en la base de datos.
+    El campo 'razon_social' es el único requerido.
+    NO USES esta herramienta si la 'razon_social' está vacía o ausente.
+    """
+    logger.info(f"Tool ejecutado: Guardando Acta Constitutiva en BD: {razon_social}")
+
+    if not razon_social:
+        return "Error: Falta la razón social de la empresa. Es el campo requerido. Por favor solícitalo al usuario."
+
+    from app.core.database import SessionLocal
+    from app.models.rag import ActaConstitutiva_BD
+
+    db = SessionLocal()
+    try:
+        # Verificar duplicado por RFC o razón social + número de escritura
+        is_duplicate = False
+        if rfc:
+            is_duplicate = db.query(ActaConstitutiva_BD).filter(ActaConstitutiva_BD.RFC == rfc).count() > 0
+        elif razon_social and numero_escritura:
+            is_duplicate = db.query(ActaConstitutiva_BD).filter(
+                ActaConstitutiva_BD.RazonSocial == razon_social,
+                ActaConstitutiva_BD.NumeroEscritura == numero_escritura
+            ).count() > 0
+
+        nueva_acta = ActaConstitutiva_BD(
+            AiDocumentId=0,
+            RazonSocial=razon_social,
+            RFC=rfc,
+            FechaConstitucion=fecha_constitucion,
+            ObjetoSocial=objeto_social,
+            RepresentanteLegal=representante_legal,
+            Notaria=notaria,
+            Ciudad=ciudad,
+            Notario=notario,
+            NumeroEscritura=numero_escritura,
+            IsDuplicate=is_duplicate
+        )
+        db.add(nueva_acta)
+        db.commit()
+        dup_msg = " (DUPLICADO: ya existía un acta con este RFC/escritura)" if is_duplicate else ""
+        return f"Éxito: Acta Constitutiva de '{razon_social}' guardada en la base de datos.{dup_msg}"
+    except Exception as e:
+        logger.error(f"Error en save_acta_constitutiva_to_db: {e}")
+        return f"Error interno al intentar guardar el Acta Constitutiva: {str(e)}"
+    finally:
+        db.close()
 
 
 class AIService:
@@ -166,11 +339,18 @@ class AIService:
 
     def __init__(self):
         self._agent_executor: Optional[Any] = None
-        self.tools = [search_document_content, get_asset_info, save_asset_to_db]
+        self.tools = [
+            search_document_content,
+            get_asset_info,
+            save_asset_to_db,
+            save_cfdi_to_db,
+            save_identificacion_to_db,
+            save_acta_constitutiva_to_db,
+        ]
 
         self.system_prompt = (
              "Eres un asistente experto en análisis de documentos corporativos "
-             "(resguardos, contratos, facturas, inventarios). "
+             "(resguardos, contratos, facturas, inventarios, CFDIs, identificaciones oficiales, actas constitutivas). "
              "Tu objetivo es responder a las preguntas del usuario basándote "
              "ESTRICTAMENTE en la información que encuentres en el documento "
              "proporcionado usando tus herramientas. "
@@ -179,10 +359,14 @@ class AIService:
              "cada activo detectado en la tabla y MÚESTRASELO al usuario en una lista. "
              "PREGÚNTALE si está de acuerdo con la lista extraída y si quieres que procedas a guardarlos. "
              "SÓLO si el usuario te responde afirmativamente (ej. 'sí', 'procede'), "
-             "entonces DEBES invocar la herramienta 'save_asset_to_db' secuencialmente MÚLTIPLES VECES "
-             "(una vez por cada activo detectado), para inyectarlos en la base de datos. "
-             "Solo pregúntale por datos faltantes si a un activo específico le falta la 'clave vieja' o el 'nombre'. "
-             "Si no sabes la respuesta o no está en el documento, dilo claramente. "
+             "entonces DEBES invocar la herramienta correspondiente según el tipo de documento: "
+             "- Para activos de inventario: usa 'save_asset_to_db'. "
+             "- Para CFDIs (facturas fiscales del SAT con UUID): usa 'save_cfdi_to_db'. Los montos siempre en pesos mexicanos (MXN). "
+             "- Para identificaciones (INE, Pasaporte, Cédula): usa 'save_identificacion_to_db'. "
+             "- Para actas constitutivas o escrituras notariales de empresa: usa 'save_acta_constitutiva_to_db'. "
+             "Invoca la herramienta secuencialmente MÚLTIPLES VECES si hay varios registros. "
+             "Solo pregunta por datos faltantes si al registro específico le falta su campo requerido (clave_vieja, uuid, nombre o razon_social). "
+             "Si no sabes la respuesta o no está en el documento, dílo claramente. "
              "No inventes datos. Responde siempre en español."
         )
 
@@ -337,7 +521,7 @@ class AIService:
         
         prompt = (
             "Analiza el siguiente documento y extrae los datos solicitados en formato de tabla (lista de objetos). "
-            "Si no es Activo, Personal o Resguardo, clasifícalo como 'Otro'.\n"
+            "Clasifícalo correctamente en 'Activo', 'Comprobante de Domicilio', 'Resguardo', 'Personal', 'CFDI', 'Identificación Oficial', 'Acta Constitutiva' u 'Otro'.\n"
             "Presta especial atención a la sección de 'EXPERIENCIAS PREVIAS' si existe, para ver cómo el usuario corrigió extracciones anteriores y NO cometer los mismos errores.\n\n"
             f"{few_shot_prompt}\n"
             f"Documento a analizar:\n{context}"
