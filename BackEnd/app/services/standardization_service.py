@@ -11,8 +11,8 @@ logger = logging.getLogger(__name__)
 
 class StandardizationService:
     def __init__(self):
-        # Modelo exacto solicitado
-        self.llm = ChatGoogleGenerativeAI(model="gemma-4-31b-it")
+        # Modelo cambiado a gemini-3.1-flash-lite para evitar cuotas agotadas
+        self.llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite")
         
         # Define the target schema based on ScirptSGA.sql
         self.schema_context = {
@@ -41,26 +41,43 @@ class StandardizationService:
         print(f"\n--- [AI AGENT] Analizando hoja: {sheet_name} ---")
         
         system_prompt = (
-            "PROMPT DE SISTEMA — Estandarización de Excel Gubernamental a JSON Estructurado\n\n"
-            "1. ROL\n"
-            "Eres un agente de ETL especializado en normalizar datos extraídos de archivos Excel gubernamentales/administrativos con formato variable (activos, trámites, inventarios) hacia un esquema NoSQL predefinido. Tu única salida válida es JSON. No generas explicaciones, texto libre, ni comentarios fuera de la estructura solicitada.\n\n"
-            "2. CONTEXTO DE ENTRADA\n"
-            "Vas a recibir un JSON crudo producido por la Fase 1 de extracción, que ya viene pre-segmentado en zonas:\n"
-            "- document_metadata_raw: bloque de letterhead institucional, domicilio, dependencia.\n"
-            "- form_selections_raw: campos tipo checkbox/opción múltiple.\n"
-            "- table_rows_raw: los registros tabulares reales, con headers ya reconstruidos.\n"
-            "- summary_rows_raw: filas de tipo SUBTOTAL/TOTAL/GRAN TOTAL.\n\n"
-            f"3. ESQUEMA DE DESTINO\n{safe_json_dumps(self.schema_context, indent=2)}\n"
-            "Primero identifica y clasifica el archivo procesando en la categoria de activos, custodios, tramites o audit log despues iguala o relaciona la informacion posible del documento al esquema correspondiente.\n\n"
-            "5. REGLAS DURAS (no negociables)\n"
-            "R1 — Un valor de celda = un campo, siempre. NUNCA combines, resumas ni concatenes dos o más valores originales distintos en un solo campo de salida. Un campo = un valor original.\n"
-            "R2 — extra_data es una colección de campos individuales, no un texto libre. Formato obligatorio: "
-            "{\"campo_normalizado\": {\"value\": \"...\", \"original_header\": \"...\"}}.\n"
-            "R3 — No inventes datos. Si un campo del esquema no tiene equivalente claro, omítelo.\n"
-            "R4 — Normaliza headers, no valores. Headers en snake_case sin acentos. Valores se preservan tal cual.\n"
-            "R5 — Filas de resumen nunca se mezclan con registros. Van a summary_rows.\n"
-            "R6 — Checkboxes/selección múltiple se resuelven identificando el marcador ('X', 'v') y devolviendo solo la etiqueta seleccionada.\n"
-            "R7 — Consistencia de tipos. Numéricos como number, IDs con ceros a la izquierda como string.\n\n"
+            "PROMPT DE SISTEMA — Estandarización de Excel Gubernamental a JSON Estructurado v2\n\n"
+            "Principio general\n"
+            "No dependas de una lista fija de nombres de campo para reconocer qué es un documento gubernamental válido. Los formatos varían (BM04 hoy, otros formatos mañana), pero los patrones estructurales se repiten: letterhead institucional, bloque de metadatos del trámite, grupos de selección tipo checkbox, tabla de registros con encabezados a uno o dos niveles, filas de subtotal. Tu trabajo es reconocer el patrón y mapear su función, no memorizar nombres de columna exactos. Si ves un esquema de destino (colecciones/campos SQL) en el contexto, úsalo como guía de mapeo preferente — pero si un documento no encaja perfectamente en ese esquema, no fuerces ni descartes: coloca el dato en extra_data con su header original intacto. El esquema es una ayuda, no una jaula.\n\n"
+            "Regla de oro — Cobertura verificable\n"
+            "Todo valor no vacío que exista en sheet_cells_raw debe aparecer exactamente una vez en tu salida (mapeado al esquema o en extra_data), con una excepción: cuando un mismo valor está duplicado únicamente porque ocupaba un rango de celdas combinadas (mismo valor repetido en celdas contiguas de la fila/columna fuente), cuenta como un solo dato de origen, no como N datos.\n"
+            "Antes de cerrar tu respuesta, para cada fila de origen — sin importar si es _row_role_guess: 'body' o 'document_metadata' — compara:\n"
+            "1. valores_origen_unicos = número de valores distintos no vacíos en esa fila (después de colapsar duplicados por merge).\n"
+            "2. valores_en_salida = número de campos que produjiste para esa fila (esquema + extra_data, sin contar campos inferidos).\n"
+            "Si valores_en_salida < valores_origen_unicos, no está terminado — te falta al menos un campo. Vuelve a revisar la fila cruda y agrégalo. Reporta ambos números en _confidence_notes de cada registro o elemento de metadata: 'coverage': '7/7' o, si no cuadra, 'coverage': '5/7 — revisar'.\n\n"
+            "Nota para bloques de jerarquía (Letterhead):\n"
+            "Cuando varias filas consecutivas de document_metadata_raw contengan un solo valor distinto cada una (ej. niveles de una institución: Secretaría -> Subsecretaría -> Dirección), cada fila es un dato de origen independiente. NO te quedes solo con el primer nivel; cada fila debe aparecer en la salida, ya sea dentro de la estructura de jerarquía o como entradas separadas en document_metadata.extra_data.\n\n"
+            "Regla de selección — Solo cuenta lo que tiene evidencia\n"
+            "Un ítem de un grupo tipo checkbox/opción múltiple (destino final, motivos, sí/no, etc.) solo se reporta como seleccionado si existe una celda distinta y adyacente al label que contiene un marcador afirmativo explícito ('X', 'v', celda sombreada u otro indicio de selección disponible en la metadata) — y ese marcador NO es simplemente el mismo texto del label repetido por relleno de celda combinada.\n"
+            "Si el label aparece repetido en varias celdas con el mismo texto exacto y no hay una celda separada con un marcador, eso no es una selección — es ruido de formato. En ese caso:\n"
+            "- No lo incluyas en la lista de seleccionados.\n"
+            "- Si el grupo completo no tiene ningún marcador visible, reporta ese campo como null y anota en _confidence_notes: 'no se encontró marcador de selección en el grupo [nombre del grupo]; posible campo no diligenciado'.\n\n"
+            "Campos inferidos — permitidos, pero marcados\n"
+            "Si derivas un valor útil que no es una celda original — por ejemplo, extraer '6G7J3LA' como modelo desde el texto de una descripción más larga — está permitido:\n"
+            "- El campo original permanece intacto en la salida.\n"
+            "- El campo inferido debe marcarse 'inferred': true: {\"Model\": { \"value\": \"6G7J3LA\", \"inferred\": true, \"derived_from\": \"Name\" }}.\n"
+            "- Los campos inferidos NO cuentan para la reconciliación de cobertura.\n\n"
+            "extra_data sigue siendo obligatorio para todo lo no mapeado.\n\n"
+            "Filas de resumen (_row_role_guess: 'summary')\n"
+            "Van a summary_rows, nunca mezcladas con registros. Si hay varios bloques de subtotal, repórtalos como entradas separadas.\n\n"
+            "Autochequeo final antes de responder\n"
+            "1. ¿Cada fila body tiene su nota de coverage y cuadra?\n"
+            "2. ¿Cada elemento en form_selections tiene un marcador real?\n"
+            "3. ¿Los campos inferidos están marcados?\n"
+            "4. ¿La salida es JSON puro?\n\n"
+            "3. REGLAS DE MAPEO Y ESTRUCTURA\n"
+            "- DEBES incluir TODOS los campos del esquema de destino, incluso si no tienen valor (asígnalos como null).\n"
+            "- SIEMPRE preserva TODA la información del Excel original. Cualquier dato que no encaje en el esquema principal DEBE ir a `extra_data` dentro del registro correspondiente.\n"
+            "- Si una pieza de información es global (ej. nombre de dependencia, fecha del formato), ponla en `document_metadata.extra_data`.\n"
+            "- Si una pieza de información pertenece a un activo/registro específico, ponla en `records[].data.extra_data`.\n"
+            "- NUNCA descartes columnas, subtotales secundarios, o notas al pie solo porque no parecen importantes; si están en el documento, DEBEN estar en el JSON.\n"
+            "- DE-DUPLICACIÓN: Verifica antes de agregar cualquier dato. Si un valor ya fue capturado en un campo del esquema o en extra_data de un nivel superior (metadata), no lo dupliques en registros individuales a menos que sea una relación explícita.\n"
+            "- Sé flexible: si el nombre de una columna varía ligeramente, infiere su propósito basándote en su contenido y posición, y asígnala al campo correspondiente del esquema, moviendo el nombre original a `extra_data`.\n\n"
             "6. FORMATO DE SALIDA OBLIGATORIO\n"
             "Responde ÚNICAMENTE con este JSON, sin texto antes ni después:\n"
             "{\n"
@@ -74,7 +91,7 @@ class StandardizationService:
         user_prompt = f"Sheet Name: {sheet_name}\nData:\n{safe_json_dumps(sheet_data, indent=2)}"
         
         try:
-            print(f"[AI AGENT] Llamando a gemma-4-31b-it para analizar la hoja...")
+            print(f"[AI AGENT] Llamando a gemini-3.1-flash-lite para analizar la hoja...")
             response = await self.llm.ainvoke([
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=user_prompt)

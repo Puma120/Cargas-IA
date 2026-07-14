@@ -197,7 +197,7 @@ class AIService:
         )
 
         llm = ChatGoogleGenerativeAI(
-            model="gemini-3.5-flash",
+            model="gemini-3.1-flash-lite",
             google_api_key=settings.gemini_api_key,
             temperature=0.1,
         )
@@ -328,7 +328,7 @@ class AIService:
         logger.info(f"Analizando estructura de document_id: {document_id}")
         
         llm = ChatGoogleGenerativeAI(
-            model="gemini-3.5-flash",
+            model="gemini-3.1-flash-lite",
             google_api_key=settings.gemini_api_key,
             temperature=0.0,
         )

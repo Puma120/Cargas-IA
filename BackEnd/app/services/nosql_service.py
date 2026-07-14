@@ -7,12 +7,14 @@ logger = logging.getLogger(__name__)
 
 class NoSQLService:
     def __init__(self):
-        # Use host.docker.internal to connect to MongoDB running on the host machine from inside Docker
-        self.url = os.getenv("NOSQL_URL", "mongodb://host.docker.internal:27017")
+        # Conexión al servicio 'mongodb' definido en docker-compose
+        self.url = os.getenv("NOSQL_URL", "mongodb://mongodb:27017")
         self.db_name = "CargasIA_Migration"
         try:
-            self.client = MongoClient(self.url)
+            self.client = MongoClient(self.url, serverSelectionTimeoutMS=5000)
             self.db = self.client[self.db_name]
+            # Verificar conexión
+            self.client.server_info()
             logger.info(f"Connected to NoSQL database at {self.url}")
         except Exception as e:
             logger.error(f"Could not connect to NoSQL: {e}")
