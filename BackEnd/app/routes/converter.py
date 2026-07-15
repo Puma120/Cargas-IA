@@ -21,6 +21,21 @@ nosql_service = NoSQLService()
 # Directorio de logs dentro del contenedor (mapeado a BackEnd/data/migration_logs)
 LOGS_BASE_DIR = "/app/data/migration_logs"
 
+@router.get("/collections")
+async def get_collections():
+    """List all available collections in the NoSQL database."""
+    return {"collections": nosql_service.list_collections()}
+
+@router.post("/save")
+async def save_excel_data(payload: Dict[str, Any]):
+    """Save corrected Excel data to the selected collection."""
+    sheet_name = payload.get("sheet_name")
+    collection = payload.get("collection")
+    data = payload.get("data")
+    
+    result_id, actual_collection = nosql_service.save_document(collection, data)
+    return {"status": "success", "id": result_id, "collection": actual_collection}
+
 @router.post("/upload", response_model=List[Dict[str, Any]])
 async def upload_file_to_nosql(file: UploadFile = File(...)):
     """
@@ -64,22 +79,13 @@ async def upload_file_to_nosql(file: UploadFile = File(...)):
             final_file_path = os.path.join(session_path, f"final_{sheet_name}.json")
             with open(final_file_path, "w", encoding="utf-8") as f:
                 f.write(safe_json_dumps(standardized_doc, indent=2, ensure_ascii=False))
-            
-            # Save the Master Document to NoSQL
-            collection = standardized_doc.get('document_metadata', {}).get('collection', 'generic_migration') if isinstance(standardized_doc, dict) else 'generic_migration'
-            
-            try:
-                doc_id = nosql_service.save_document(collection, standardized_doc)
-            except Exception as db_err:
-                print(f"[API] WARNING: Could not save to NoSQL, but file was saved. Error: {db_err}")
-                doc_id = "NOSQL_SAVE_FAILED"
-            
+
+            # Guardar el documento con la estructura detectada por la IA
             final_results.append({
-                "sheet": sheet_name, 
-                "id": doc_id, 
+                "sheet": sheet_name,
+                "data": standardized_doc,
                 "metadata": standardized_doc.get('document_metadata', {}) if isinstance(standardized_doc, dict) else {}
             })
-
         print(f">>> [API] Proceso completado. Archivos disponibles en {session_path} <<<\n")
         return final_results
 

@@ -20,16 +20,40 @@ class NoSQLService:
             logger.error(f"Could not connect to NoSQL: {e}")
             raise e
 
+    def list_collections(self):
+        """Returns a list of existing collections in the database."""
+        return self.db.list_collection_names()
+
     def save_document(self, collection_name: str, document: Dict[str, Any]):
         """
-        Saves a document into a specific collection.
+        Saves a document into a collection, dynamically creating/matching it.
         """
         try:
-            print(f"[NOSQL] Guardando documento en colección '{collection_name}'...")
-            collection = self.db[collection_name]
+            # 1. Resolver colección
+            # Normalización simple: snake_case sugerido
+            normalized_name = collection_name.lower().replace(" ", "_")
+            
+            # Simple match por existencia
+            existing_collections = self.list_collections()
+            
+            target_collection = "generic_migration"
+            if normalized_name in existing_collections:
+                target_collection = normalized_name
+                print(f"[NOSQL] Match encontrado: {target_collection}")
+            else:
+                # Si es una propuesta válida, usamos el nombre propuesto para crearla
+                if normalized_name and normalized_name != "generic_migration":
+                    target_collection = normalized_name
+                    print(f"[NOSQL] Creando nueva colección: {target_collection}")
+                else:
+                    print(f"[NOSQL] Usando fallback: generic_migration")
+
+            collection = self.db[target_collection]
             result = collection.insert_one(document)
-            return str(result.inserted_id)
+            
+            # Audit log
+            print(f"[NOSQL] Guardado en: {target_collection}")
+            return str(result.inserted_id), target_collection
         except Exception as e:
-            print(f"[NOSQL] ERROR guardando en colección {collection_name}: {e}")
-            logger.error(f"Error saving to NoSQL collection {collection_name}: {e}")
+            logger.error(f"Error saving to NoSQL: {e}")
             raise e

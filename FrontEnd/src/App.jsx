@@ -1,16 +1,44 @@
 import { useState, useRef, useEffect } from 'react';
+import { uploadExcel, getCollections, saveExcelData, startRagProcessing, getStatus, saveAndLearn } from './api';
 import { Upload, FileText, Brain, Database, Save, CheckCircle, XCircle } from 'lucide-react';
-import { uploadPdf, startRagProcessing, getStatus, saveAndLearn } from './api';
 
 function App() {
   const [file, setFile] = useState(null);
-  const [isDragging, setIsDragging] = useState(false);
-  const [uploading, setUploading] = useState(false);
   
+  // Helper para extraer campos dinámicamente
+  const getAllFields = (records) => {
+    const fields = new Set();
+    records.forEach(r => {
+      Object.keys(r.data).forEach(k => fields.add(k));
+      if (r.data.extra_data) {
+        Object.keys(r.data.extra_data).forEach(k => fields.add(`extra_data.${k}`));
+      }
+    });
+    return Array.from(fields);
+  };
+
+  const getNestedValue = (obj, path) => {
+    return path.split('.').reduce((prev, curr) => (prev ? prev[curr] : null), obj);
+  };
+
+  const setNestedValue = (obj, path, value) => {
+    const keys = path.split('.');
+    const lastKey = keys.pop();
+    const lastObj = keys.reduce((prev, curr) => prev[curr], obj);
+    lastObj[lastKey] = value;
+  };
+
+  const [isDragging, setIsDragging] = useState(false);
+
+  const [uploading, setUploading] = useState(false);
+
   const [status, setStatus] = useState('IDLE'); // IDLE, PROCESSING_OCR, PROCESSING_VECTOR, PROCESSING_LLM, COMPLETED, ERROR
   const [errorMsg, setErrorMsg] = useState('');
   const [extractedData, setExtractedData] = useState(null);
-  
+
+  const [availableCollections, setAvailableCollections] = useState([]);
+  const [selectedCollections, setSelectedCollections] = useState({}); // sheetName -> collectionName
+
   const [documentInfo, setDocumentInfo] = useState(null);
   const intervalRef = useRef(null);
 
@@ -49,18 +77,32 @@ function App() {
     setStatus('PROCESSING_OCR');
     setErrorMsg('');
     setExtractedData(null);
-    
+
     try {
-      // 1. Upload
-      const uploadRes = await uploadPdf(file);
-      if (uploadRes.duplicate) {
-        alert("⚠️ ATENCIÓN: Este documento ya ha sido procesado anteriormente. Se cargarán los datos existentes para evitar duplicados en la base de datos.");
+      if (file.name.endsWith('.xlsx') || file.name.endsWith('.xls')) {
+        const uploadRes = await uploadExcel(file);
+        
+        // Cargar colecciones disponibles
+        const colls = await getCollections();
+        setAvailableCollections(colls);
+        
+        // Set defaults
+        const initialSelections = {};
+        uploadRes.forEach(s => {
+            const detected = s.data.records[0]?.collection || 'generic_migration';
+            initialSelections[s.sheet] = detected;
+        });
+        setSelectedCollections(initialSelections);
+        
+        setExtractedData({ excelData: uploadRes });
+        setStatus('COMPLETED');
+        setUploading(false);
+        return;
       }
-      setDocumentInfo(uploadRes);
-      
-      // 2. Process
-      await startRagProcessing(uploadRes.document_id, uploadRes.entity_type, uploadRes.file_path);
-      
+
+      // 1. Upload PDF
+      const uploadRes = await uploadPdf(file);
+      // ... rest of logic for pdf ...
       // 3. Poll Status
       intervalRef.current = setInterval(async () => {
         try {
@@ -94,6 +136,7 @@ function App() {
   const handleSaveAndLearn = async () => {
     if (!extractedData || !documentInfo) return;
     try {
+      
       const isComprobante = extractedData.comprobantes && extractedData.comprobantes.length > 0;
       const dataToSave = isComprobante ? extractedData.comprobantes : extractedData.activos;
       const dataType = isComprobante ? 'comprobantes' : 'activos';
@@ -137,11 +180,11 @@ function App() {
             onDrop={handleDrop}
             onClick={() => document.getElementById('fileUpload').click()}
           >
-            <input 
-              type="file" 
-              id="fileUpload" 
-              style={{display: 'none'}} 
-              accept=".pdf"
+            <input
+              type="file"
+              id="fileUpload"
+              style={{display: 'none'}}
+              accept=".pdf, .xlsx, .xls"
               onChange={handleFileChange}
             />
             <div className="dropzone-icon">
@@ -214,13 +257,73 @@ function App() {
         {extractedData && (
           <div style={{marginTop: '2rem'}}>
             <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem'}}>
-              <h2>Datos Extraídos {extractedData.comprobantes?.length > 0 ? '(Comprobantes)' : '(Activos)'}</h2>
-              <button className="btn" onClick={handleSaveAndLearn}>
-                <Save size={20} /> Guardar Experiencia
-              </button>
+              <h2>Datos Extraídos</h2>
+              {/* Solo mostrar botón si hay comprobantes procesados vía RAG */}
+              {extractedData.comprobantes && (
+                <button className="btn" onClick={handleSaveAndLearn}>
+                  <Save size={20} /> Guardar Experiencia
+                </button>
+              )}
             </div>
-            
-            {extractedData.comprobantes?.length > 0 ? (
+
+            {extractedData.excelData ? (
+              extractedData.excelData.map((sheetResult, sheetIdx) => (
+                <div key={sheetIdx} className="result-card" style={{marginBottom: '2rem'}}>
+                  <h3>Hoja: {sheetResult.sheet}</h3>
+                  <p style={{color: 'var(--text-secondary)'}}>
+                    Colección destino detectada: <strong>{sheetResult.data.records[0]?.collection || 'generic_migration'}</strong>
+                  </p>
+                  <p style={{color: 'var(--text-secondary)'}}>
+                    Seleccionar destino final: 
+                    <select 
+                      value={selectedCollections[sheetResult.sheet]}
+                      onChange={(e) => setSelectedCollections({...selectedCollections, [sheetResult.sheet]: e.target.value})}
+                      style={{marginLeft: '0.5rem', background: '#222', color: 'white', padding: '0.2rem', borderRadius: '4px'}}
+                    >
+                      {availableCollections.map(c => <option key={c} value={c}>{c}</option>)}
+                      <option value="nueva_coleccion">+ Crear nueva colección</option>
+                    </select>
+                  </p>
+                  
+                  <div className="table-container" style={{overflowX: 'auto', marginTop: '1rem'}}>
+                    <table style={{width: '100%', borderCollapse: 'collapse'}}>
+                      <thead>
+                        <tr style={{background: 'rgba(255,255,255,0.05)'}}>
+                          {sheetResult.data.records && sheetResult.data.records.length > 0 && 
+                            getAllFields(sheetResult.data.records).map(field => (
+                              <th key={field} style={{padding: '0.5rem', textAlign: 'left', borderBottom: '1px solid #444', textTransform: 'capitalize'}}>{field.replace(/\./g, ' ')}</th>
+                            ))
+                          }
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sheetResult.data.records && sheetResult.data.records.map((record, recIdx) => (
+                          <tr key={recIdx}>
+                            {getAllFields(sheetResult.data.records).map((field, cellIdx) => (
+                              <td key={cellIdx} style={{padding: '0.5rem', borderBottom: '1px solid #333'}}>
+                                <input 
+                                  value={getNestedValue(record.data, field) || ''}
+                                  onChange={(e) => {
+                                    const newData = {...extractedData};
+                                    setNestedValue(newData.excelData[sheetIdx].data.records[recIdx].data, field, e.target.value);
+                                    setExtractedData(newData);
+                                  }}
+                                  style={{background: 'transparent', border: '1px solid #555', color: 'white', padding: '0.2rem', width: '100%'}}
+                                />
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <button className="btn" style={{marginTop: '1rem'}} onClick={async () => {
+                      await saveExcelData(sheetResult.sheet, selectedCollections[sheetResult.sheet], sheetResult.data);
+                      alert("Datos guardados en " + selectedCollections[sheetResult.sheet]);
+                    }}>Guardar Hoja</button>
+                  </div>
+                </div>
+              ))
+            ) : extractedData.comprobantes?.length > 0 ? (
               extractedData.comprobantes.map((comp, idx) => (
                 <div key={idx} className="result-card" style={{marginBottom: '1rem'}}>
                   <div className="result-row">
