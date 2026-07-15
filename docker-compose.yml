@@ -12,6 +12,7 @@ services:
       - ./BackEnd/uploads:/app/uploads
     depends_on:
       - qdrant
+      - mongodb
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -32,5 +33,14 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
 
+  mongodb:
+    image: mongo:latest
+    command: --logpath=/dev/null --quiet
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
 volumes:
   qdrant_data:
+  mongo_data:

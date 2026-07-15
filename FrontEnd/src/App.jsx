@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
+import { uploadPdf, uploadExcel, getCollections, saveExcelData, startRagProcessing, getStatus, saveAndLearn } from './api';
 import { Upload, FileText, Brain, Save, CheckCircle, XCircle, ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
-import { uploadPdf, startRagProcessing, getStatus, saveAndLearn } from './api';
 
 // Cuántos documentos se procesan (OCR + LLM) al mismo tiempo. Gemini free-tier
 // tiene límites de pocos requests/minuto, así que un número bajo evita 429s
@@ -102,6 +102,32 @@ function App() {
   const queueRef = useRef(queue);
   const startedIdsRef = useRef(new Set());
 
+  // Excel jobs: cada archivo Excel subido se procesa de inmediato (no pasa por
+  // la cola OCR/LLM) y produce una o varias hojas editables antes de guardarse.
+  const [excelJobs, setExcelJobs] = useState([]);
+
+  const getAllFields = (records) => {
+    const fields = new Set();
+    records.forEach(r => {
+      Object.keys(r.data).forEach(k => fields.add(k));
+      if (r.data.extra_data) {
+        Object.keys(r.data.extra_data).forEach(k => fields.add(`extra_data.${k}`));
+      }
+    });
+    return Array.from(fields);
+  };
+
+  const getNestedValue = (obj, path) => {
+    return path.split('.').reduce((prev, curr) => (prev ? prev[curr] : null), obj);
+  };
+
+  const setNestedValue = (obj, path, value) => {
+    const keys = path.split('.');
+    const lastKey = keys.pop();
+    const lastObj = keys.reduce((prev, curr) => prev[curr], obj);
+    lastObj[lastKey] = value;
+  };
+
   useEffect(() => {
     queueRef.current = queue;
   }, [queue]);
@@ -111,21 +137,26 @@ function App() {
   };
 
   const addFiles = (fileList) => {
-    const pdfFiles = Array.from(fileList).filter(f => f.name.toLowerCase().endsWith('.pdf'));
-    if (pdfFiles.length === 0) return;
+    const files = Array.from(fileList);
+    const pdfFiles = files.filter(f => f.name.toLowerCase().endsWith('.pdf'));
+    const excelFiles = files.filter(f => /\.(xlsx|xls)$/i.test(f.name));
 
-    const newItems = pdfFiles.map(file => ({
-      id: nextItemId++,
-      file,
-      name: file.name,
-      phase: 'QUEUED',
-      documentInfo: null,
-      extractedData: null,
-      errorMsg: '',
-      duplicateWarning: false,
-      expanded: false,
-    }));
-    setQueue(q => [...q, ...newItems]);
+    if (pdfFiles.length > 0) {
+      const newItems = pdfFiles.map(file => ({
+        id: nextItemId++,
+        file,
+        name: file.name,
+        phase: 'QUEUED',
+        documentInfo: null,
+        extractedData: null,
+        errorMsg: '',
+        duplicateWarning: false,
+        expanded: false,
+      }));
+      setQueue(q => [...q, ...newItems]);
+    }
+
+    excelFiles.forEach(file => handleExcelFile(file));
   };
 
   const handleDragOver = (e) => { e.preventDefault(); setIsDragging(true); };
@@ -248,6 +279,75 @@ function App() {
 
   const toggleExpanded = (id) => updateItem(id, (it) => ({ expanded: !it.expanded }));
 
+  // -- Excel jobs: subida, edición y guardado de hojas --
+
+  const handleExcelFile = async (file) => {
+    const id = nextItemId++;
+    setExcelJobs(jobs => [...jobs, {
+      id,
+      fileName: file.name,
+      sheets: null,
+      availableCollections: [],
+      selectedCollections: {},
+      loading: true,
+      error: '',
+    }]);
+
+    try {
+      const uploadRes = await uploadExcel(file);
+      const colls = await getCollections();
+
+      const initialSelections = {};
+      uploadRes.forEach(s => {
+        initialSelections[s.sheet] = s.data.records[0]?.collection || 'generic_migration';
+      });
+
+      setExcelJobs(jobs => jobs.map(j => j.id === id ? {
+        ...j,
+        sheets: uploadRes,
+        availableCollections: colls,
+        selectedCollections: initialSelections,
+        loading: false,
+      } : j));
+    } catch (err) {
+      setExcelJobs(jobs => jobs.map(j => j.id === id ? {
+        ...j,
+        loading: false,
+        error: err.response?.data?.detail || err.message || 'Fallo en la subida',
+      } : j));
+    }
+  };
+
+  const updateExcelSelection = (jobId, sheet, collection) => {
+    setExcelJobs(jobs => jobs.map(j => j.id === jobId
+      ? { ...j, selectedCollections: { ...j.selectedCollections, [sheet]: collection } }
+      : j));
+  };
+
+  const handleExcelCellChange = (jobId, sheetIdx, recIdx, field, value) => {
+    setExcelJobs(jobs => jobs.map(j => {
+      if (j.id !== jobId) return j;
+      const newSheets = [...j.sheets];
+      const newRecords = [...newSheets[sheetIdx].data.records];
+      const newRecordData = { ...newRecords[recIdx].data };
+      setNestedValue(newRecordData, field, value);
+      newRecords[recIdx] = { ...newRecords[recIdx], data: newRecordData };
+      newSheets[sheetIdx] = { ...newSheets[sheetIdx], data: { ...newSheets[sheetIdx].data, records: newRecords } };
+      return { ...j, sheets: newSheets };
+    }));
+  };
+
+  const saveExcelSheet = async (job, sheetResult) => {
+    try {
+      await saveExcelData(sheetResult.sheet, job.selectedCollections[sheetResult.sheet], sheetResult.data);
+      alert(`Datos guardados en ${job.selectedCollections[sheetResult.sheet]}`);
+    } catch (err) {
+      alert('Error al guardar: ' + (err.response?.data?.detail || err.message));
+    }
+  };
+
+  const removeExcelJob = (id) => setExcelJobs(jobs => jobs.filter(j => j.id !== id));
+
   const queuedCount = queue.filter(it => it.phase === 'QUEUED').length;
   const activeCount = queue.filter(it => ACTIVE_PHASES.includes(it.phase)).length;
   const completedCount = queue.filter(it => it.phase === 'COMPLETED').length;
@@ -272,16 +372,16 @@ function App() {
             type="file"
             id="fileUpload"
             style={{ display: 'none' }}
-            accept=".pdf"
+            accept=".pdf,.xlsx,.xls"
             multiple
             onChange={handleFileChange}
           />
           <div className="dropzone-icon">
             <Upload size={48} />
           </div>
-          <h3>Arrastra y suelta uno o varios PDFs aquí</h3>
+          <h3>Arrastra y suelta uno o varios PDFs o Excel aquí</h3>
           <p style={{ color: 'var(--text-secondary)', marginTop: '0.5rem' }}>
-            o haz clic para explorar — se procesan hasta {MAX_CONCURRENT} a la vez
+            o haz clic para explorar — los PDF se procesan hasta {MAX_CONCURRENT} a la vez, los Excel se procesan al instante
           </p>
         </div>
       </div>
@@ -371,6 +471,81 @@ function App() {
             ))}
           </div>
         </>
+      )}
+
+      {excelJobs.length > 0 && (
+        <div className="excel-jobs">
+          {excelJobs.map(job => (
+            <div key={job.id} className="glass-panel" style={{ marginTop: '2rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h3>{job.fileName}</h3>
+                <button className="btn-icon" onClick={() => removeExcelJob(job.id)} title="Quitar">
+                  <Trash2 size={16} />
+                </button>
+              </div>
+
+              {job.loading && <p>Procesando...</p>}
+
+              {job.error && (
+                <div className="error-box">
+                  <p>{job.error}</p>
+                </div>
+              )}
+
+              {job.sheets && job.sheets.map((sheetResult, sheetIdx) => (
+                <div key={sheetIdx} className="result-card" style={{ marginTop: '1.5rem' }}>
+                  <h3>Hoja: {sheetResult.sheet}</h3>
+                  <p style={{ color: 'var(--text-secondary)' }}>
+                    Colección destino detectada: <strong>{sheetResult.data.records[0]?.collection || 'generic_migration'}</strong>
+                  </p>
+                  <p style={{ color: 'var(--text-secondary)' }}>
+                    Seleccionar destino final:
+                    <select
+                      value={job.selectedCollections[sheetResult.sheet]}
+                      onChange={(e) => updateExcelSelection(job.id, sheetResult.sheet, e.target.value)}
+                      style={{ marginLeft: '0.5rem', background: '#222', color: 'white', padding: '0.2rem', borderRadius: '4px' }}
+                    >
+                      {job.availableCollections.map(c => <option key={c} value={c}>{c}</option>)}
+                      <option value="nueva_coleccion">+ Crear nueva colección</option>
+                    </select>
+                  </p>
+
+                  <div className="table-container" style={{ overflowX: 'auto', marginTop: '1rem' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                      <thead>
+                        <tr style={{ background: 'rgba(255,255,255,0.05)' }}>
+                          {sheetResult.data.records && sheetResult.data.records.length > 0 &&
+                            getAllFields(sheetResult.data.records).map(field => (
+                              <th key={field} style={{ padding: '0.5rem', textAlign: 'left', borderBottom: '1px solid #444', textTransform: 'capitalize' }}>{field.replace(/\./g, ' ')}</th>
+                            ))
+                          }
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sheetResult.data.records && sheetResult.data.records.map((record, recIdx) => (
+                          <tr key={recIdx}>
+                            {getAllFields(sheetResult.data.records).map((field, cellIdx) => (
+                              <td key={cellIdx} style={{ padding: '0.5rem', borderBottom: '1px solid #333' }}>
+                                <input
+                                  value={getNestedValue(record.data, field) || ''}
+                                  onChange={(e) => handleExcelCellChange(job.id, sheetIdx, recIdx, field, e.target.value)}
+                                  style={{ background: 'transparent', border: '1px solid #555', color: 'white', padding: '0.2rem', width: '100%' }}
+                                />
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <button className="btn" style={{ marginTop: '1rem' }} onClick={() => saveExcelSheet(job, sheetResult)}>
+                      Guardar Hoja
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );

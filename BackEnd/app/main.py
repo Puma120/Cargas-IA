@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routes import rag
+from app.routes import rag, converter
 from app.core.database import Base, engine
 import os
 
@@ -18,6 +18,7 @@ app.add_middleware(
 )
 
 app.include_router(rag.router)
+app.include_router(converter.router)
 
 @app.get("/")
 def read_root():
