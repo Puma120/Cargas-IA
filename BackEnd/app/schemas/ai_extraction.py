@@ -46,8 +46,8 @@ class CFDIExtraido(BaseModel):
 
 class IdentificacionExtraida(BaseModel):
     """Campos de una Identificación Oficial (INE, Pasaporte, Cédula Profesional)."""
-    tipo_identificacion: Literal["INE", "Pasaporte", "Cédula Profesional"] = Field(
-        ..., description="El tipo de identificación oficial."
+    tipo_identificacion: Optional[str] = Field(
+        None, description="El tipo de identificación oficial (ej. INE, Pasaporte, Cédula Profesional)."
     )
     nombre: Optional[str] = Field(None, description="Nombre completo del titular tal como aparece en el documento.")
     curp: Optional[str] = Field(
@@ -79,7 +79,7 @@ class IdentificacionExtraida(BaseModel):
         )
     )
     domicilio: Optional[str] = Field(None, description="Domicilio completo (solo si aparece en el documento).")
-    sexo: Optional[Literal["H", "M"]] = Field(None, description="Sexo del titular tal como aparece en el documento (H o M, solo aplica para INE).")
+    sexo: Optional[str] = Field(None, description="Sexo del titular tal como aparece en el documento (ej. H, M, F).")
     seccion: Optional[str] = Field(None, description="Número de sección electoral (solo aplica para INE), etiquetado como 'SECCIÓN'.")
     fecha_nacimiento: Optional[str] = Field(None, description="Fecha de nacimiento del titular tal como aparece impresa (ej. '28/09/2003').")
 
@@ -100,10 +100,7 @@ class DocumentExtraction(BaseModel):
     Esquema principal para la extracción estructurada de datos a partir de documentos OCR.
     Permite extraer tablas enteras como listas de registros.
     """
-    entity_type: Literal[
-        "Activo", "Comprobante de Domicilio", "Resguardo", "Personal",
-        "CFDI", "Identificación Oficial", "Acta Constitutiva", "Otro"
-    ] = Field(
+    entity_type: str = Field(
         description=(
             "Clasificación del documento. "
             "Si es recibo de luz/agua/predial usa 'Comprobante de Domicilio'. "

@@ -13,59 +13,76 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 logger = logging.getLogger(__name__)
 
-# DPI de renderizado de páginas. 500 es calidad ultra alta para escaneos difíciles.
-# Garantiza que el OCR pueda leer la letra más diminuta de identificaciones oficiales.
-_RENDER_DPI = 500
+# DPI de renderizado de páginas. 300 es el estándar óptimo para Tesseract.
+# Valores más altos (como 500) resaltan el ruido, los hologramas y los patrones de seguridad del fondo.
+_RENDER_DPI = 700
 
+
+import base64
+from app.core.config import settings
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import HumanMessage
 
 def _pdf_to_text_tesseract(pdf_path: str) -> str:
     """
-    Convierte cada página del PDF a imagen con PyMuPDF y aplica Tesseract OCR.
-    Retorna el texto completo concatenado de todas las páginas.
+    Convierte cada página del PDF a imagen con PyMuPDF y usa Gemini Multimodal 
+    para extraer el texto de forma perfecta. Reemplaza a Tesseract para documentos 
+    complejos como pasaportes e INEs que tienen hologramas y ruido.
     """
     try:
         import fitz  # PyMuPDF
     except ImportError as e:
-        raise RuntimeError("PyMuPDF no está instalado. Agrega 'pymupdf' a requirements.txt.") from e
-
-    try:
-        import pytesseract
-        from PIL import Image, ImageOps
-        import io
-    except ImportError as e:
-        raise RuntimeError(
-            "pytesseract o Pillow no están instalados. "
-            "Agrega 'pytesseract' y 'Pillow' a requirements.txt."
-        ) from e
+        raise RuntimeError("PyMuPDF no está instalado.") from e
 
     doc = fitz.open(pdf_path)
-    pages_text: list[str] = []
-
-    zoom = _RENDER_DPI / 72  # 72 DPI es la resolución base de PDF
+    
+    zoom = 2.0  # ~144 DPI es excelente para Gemini Vision
     mat = fitz.Matrix(zoom, zoom)
-
+    
+    images_b64 = []
     for page_num in range(len(doc)):
         page = doc[page_num]
         pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
-
-        # Convertir el pixmap a imagen PIL directamente desde bytes (sin disco)
-        img_bytes = pix.tobytes("png")
-        img = Image.open(io.BytesIO(img_bytes))
-
-        # Escala de grises + autocontraste: mejora drásticamente la lectura en
-        # escaneos con fondos de seguridad/hologramas (ej. credenciales oficiales).
-        img = ImageOps.grayscale(img)
-        img = ImageOps.autocontrast(img, cutoff=2)
-
-        # Tesseract: español como idioma principal, ingles como fallback.
-        # psm 6 (bloque uniforme de texto) capta mejor los layouts densos en
-        # columnas de identificaciones oficiales que psm 3 (segmentación automática).
-        text = pytesseract.image_to_string(img, lang="spa+eng", config="--psm 6")
-        pages_text.append(text)
-        logger.debug(f"Página {page_num + 1}/{len(doc)} procesada con Tesseract.")
-
+        img_bytes = pix.tobytes("jpeg")
+        images_b64.append(base64.b64encode(img_bytes).decode("utf-8"))
+    
     doc.close()
-    return "\n\n".join(pages_text)
+
+    if not images_b64:
+        return ""
+
+    llm = ChatGoogleGenerativeAI(
+        model="gemma-4-31b-it",
+        google_api_key=settings.gemini_api_key,
+        temperature=0.0
+    )
+
+    content = [
+        {
+            "type": "text", 
+            "text": "Transcribe TODO el texto visible en estas imágenes con extrema precisión. "
+                    "Asegúrate de extraer nombres, fechas, números de pasaporte o credencial, domicilios, "
+                    "códigos MRZ, sexo y firmas. Ignora los hologramas, rostros o marcas de agua. "
+                    "Devuelve estrictamente solo el texto plano transcrito."
+        }
+    ]
+
+    for b64 in images_b64:
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
+        })
+
+    try:
+        msg = HumanMessage(content=content)
+        response = llm.invoke([msg])
+        text = response.content
+        if isinstance(text, list):
+            text = " ".join([str(t.get("text", t)) if isinstance(t, dict) else str(t) for t in text])
+        return text
+    except Exception as e:
+        logger.error(f"Error usando Gemini para OCR: {e}")
+        return ""
 
 
 class OCRService:

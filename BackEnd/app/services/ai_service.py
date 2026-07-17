@@ -435,9 +435,31 @@ class AIService:
     ):
         """
         Toma fragmentos de texto, los convierte en objetos Document de LangChain
-        y los inyecta en la base de datos vectorial Qdrant.
+        y los inyecta en la base de datos vectorial Qdrant (limpiando vectores previos).
         """
         vector_store = get_vector_store()
+        
+        # Eliminar vectores viejos para evitar duplicación/basura si se resube el archivo
+        from app.services.vector_db_service import get_qdrant_client
+        from qdrant_client.models import Filter, FieldCondition, MatchValue
+        from app.core.config import settings
+        
+        client = get_qdrant_client()
+        try:
+            client.delete(
+                collection_name=settings.qdrant_collection_name,
+                points_selector=Filter(
+                    must=[
+                        FieldCondition(
+                            key="metadata.document_id",
+                            match=MatchValue(value=document_id)
+                        )
+                    ]
+                )
+            )
+            logger.info(f"Vectores previos eliminados para el documento {document_id}")
+        except Exception as e:
+            logger.warning(f"Ignorando limpieza previa de vectores para {document_id} (puede no existir aún): {e}")
 
         documents = []
         for i, chunk in enumerate(chunks):
@@ -547,7 +569,7 @@ class AIService:
         logger.info(f"Analizando estructura de document_id: {document_id}")
         
         llm = ChatGoogleGenerativeAI(
-            model="gemini-3.1-flash-lite",
+            model="gemini-3.5-flash",
             google_api_key=settings.gemini_api_key,
             temperature=0.0,
             max_retries=4,
@@ -558,6 +580,9 @@ class AIService:
         prompt = (
             "Analiza el siguiente documento y extrae los datos solicitados en formato de tabla (lista de objetos). "
             "Clasifícalo correctamente en 'Activo', 'Comprobante de Domicilio', 'Resguardo', 'Personal', 'CFDI', 'Identificación Oficial', 'Acta Constitutiva' u 'Otro'.\n"
+            "REGLAS ESTRICTAS DE CLASIFICACIÓN:\n"
+            "1. 'Identificación Oficial': Úsalo INVARIABLEMENTE si el documento menciona 'Instituto Nacional Electoral', 'IFE', 'INE', 'Credencial para Votar', 'Pasaporte', 'Secretaría de Relaciones Exteriores' o similares. ¡NUNCA clasifiques una identificación o pasaporte como 'Activo'!\n"
+            "2. 'Activo': Úsalo SOLO si el documento es un listado de bienes, equipo, mobiliario, vehículos o catálogo de inventario.\n"
             "Presta especial atención a la sección de 'EXPERIENCIAS PREVIAS' si existe, para ver cómo el usuario corrigió extracciones anteriores y NO cometer los mismos errores.\n"
             "Para campos alfanuméricos como CURP, Clave de Elector y OCR: transcribe carácter por carácter con "
             "mucho cuidado, sin adivinar. No confundas el dígito '0' con la letra 'O', ni la letra 'I' con el "

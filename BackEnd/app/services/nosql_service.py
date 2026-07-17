@@ -17,8 +17,7 @@ class NoSQLService:
             self.client.server_info()
             logger.info(f"Connected to NoSQL database at {self.url}")
         except Exception as e:
-            logger.error(f"Could not connect to NoSQL: {e}")
-            raise e
+            logger.warning(f"Initial connection check to NoSQL failed, will retry lazily: {e}")
 
     def list_collections(self):
         """Returns a list of existing collections in the database."""
