@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 # DPI de renderizado de páginas. 300 es el estándar óptimo para Tesseract.
 # Valores más altos (como 500) resaltan el ruido, los hologramas y los patrones de seguridad del fondo.
-_RENDER_DPI = 700
+_RENDER_DPI = 900
 
 
 import base64
