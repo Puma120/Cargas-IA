@@ -51,13 +51,36 @@ def process_document_background(document_id: int, entity_type: str, file_path: s
             chunks, document_id=str_doc_id, entity_type=entity_type
         )
 
-        # 4. Extraer estructura automáticamente
+        # 4. Extraer estructura automáticamente y persistir todo en NoSQL
         doc_record.Status = "PROCESSING_LLM"
         db.commit()
         logger.info(f"Iniciando extracción estructurada de {str_doc_id}...")
         extracted_data = ai_service.analyze_document(str_doc_id)
         if not extracted_data:
-            raise ValueError("La extracción estructurada del LLM no devolvió datos (revisa los logs de analyze_document para el error subyacente).")
+            raise ValueError("La extracción estructurada del LLM no devolvió datos.")
+
+        # Guardar en NoSQL todo el contenido (Aprendizaje/Backup)
+        from app.services.nosql_service import NoSQLService
+        nosql_svc = NoSQLService()
+        
+        # Determinar colección basada en el tipo de entidad/documento detectado por la IA
+        collection_proposal = extracted_data.get("entity_type", "otros_documentos")
+        
+        # Eliminar ObjectId si aparece en los datos de la IA (aunque no debería)
+        # Convertir a cadena serializable para evitar Object of type ObjectId is not JSON serializable
+        def serialize_data(data):
+            if isinstance(data, dict):
+                return {k: serialize_data(v) for k, v in data.items()}
+            elif isinstance(data, list):
+                return [serialize_data(i) for i in data]
+            elif hasattr(data, "__dict__"): # Para objetos Pydantic o similares si se cuelan
+                return serialize_data(data.__dict__)
+            return data
+
+        data_to_save = serialize_data(extracted_data)
+        
+        _, collection_usada = nosql_svc.save_document(collection_proposal, data_to_save)
+        logger.info(f"Documento completo guardado en NoSQL en colección: {collection_usada}")
 
         import json
         doc_record.ExtractedData = json.dumps(extracted_data)
